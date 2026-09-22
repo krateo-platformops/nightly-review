@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nightly-review
+description: Nightly platform self-review — reads telemetry and agent conversations, and proposes changes as pull requests.
+type: application
+version: CHART_VERSION
+appVersion: "CHART_VERSION"

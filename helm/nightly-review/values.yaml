@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------------------------
+# THIS COMPONENT SHIPS INERT, AND THAT IS DELIBERATE.
+#
+# `dryRun: true` and an EMPTY `proposalAllowlist` mean a fresh install reviews the platform, writes
+# Proposal objects you can read, and opens nothing. Two switches have to be thrown on purpose before it
+# can touch a repository. A thing that opens pull requests against production repositories on the night
+# it is installed, before anyone has seen the quality of its reasoning, has earned no such trust.
+# ---------------------------------------------------------------------------------------------
+schedule: "0 2 * * *"          # nightly, after the quiet hours
+windowHours: 24                # BOUNDED: spans older than the collector's JWT redaction can still
+                               # carry live credentials, so the window is a safety control, not a cost one
+dryRun: true                   # produce Proposals, open NO pull requests
+suspend: false
+
+image:
+  repository: ghcr.io/krateo-platformops/nightly-review
+  tag: ""                      # empty -> defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+retention:
+  runDays: 30                  # ReviewRun is an event; prune it
+  decidedProposalDays: 180     # a DECIDED proposal is an audit record; keep it a long time
+                               # an OPEN proposal is never collected — it is an undecided question
+
+# Which repositories each proposal kind may target. EMPTY MEANS DENY ALL.
+# `target.repo` is chosen by the model from a corpus that includes user-written chat text, so without
+# this list one sentence in a conversation could aim this service's write credential wherever it liked.
+# A proposal naming anything outside the list is refused, never redirected, and the refusal is recorded
+# on the run as a possible injection signal.
+proposalAllowlist: {}
+  # Alert:         ["krateo-platformops/krateo-observability"]
+  # Widget:        ["krateo-blueprints/portal-pages"]
+  # Prompt:        ["krateo-agentiko/autopilot"]
+  # Policy:        ["krateo-agentiko/agentgateway-policies"]
+  # Documentation: ["krateo-platformops/installer"]
+
+# The evidence queries, as configuration rather than code, so they are reviewable and adaptable to your
+# ClickHouse schema without a new image. `{from}` and `{to}` are substituted; nothing else is.
+# A model is never asked to author SQL against a store that has held credentials.
+clickhouseQueries: {}
+  # errorsByService: |
+  #   SELECT ServiceName, count() AS n, any(Body) AS sample
+  #   FROM otel_logs WHERE Timestamp BETWEEN '{from}' AND '{to}' AND SeverityText IN ('ERROR','FATAL')
+  #   GROUP BY ServiceName ORDER BY n DESC LIMIT 25
+
+config:
+  authnUrl: ""                 # enables the SA -> Krateo JWT exchange; required for kagent sessions
+  autopilotA2aUrl: http://krateo-autopilot.krateo-system.svc:8080/
+  kagentApiUrl: http://kagent-controller.krateo-system.svc:8083
+  clickhouseUrl: ""
+  evidenceMaxChars: 60000
+
+# Credentials are referenced, never inlined.
+secrets:
+  github: { name: "", key: token }          # PR creation; needs contents+pull-requests write on the
+                                            # allowlisted repos ONLY
+  clickhouse: { name: "", userKey: username, passwordKey: password }
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { memory: 1Gi }

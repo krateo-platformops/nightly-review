@@ -1,0 +1,151 @@
+# A Proposal is a DECISION RECORD, and that is why it is a separate object from the run that produced
+# it. A run is something that happened; a proposal is something with a life — proposed, opened as a PR,
+# then merged, rejected or superseded — and that life routinely outlasts the night it was noticed on.
+#
+# DELIBERATELY NO ownerReference TO ITS ReviewRun. Wiring one looks obvious and is wrong: it would let
+# the run's expiry garbage-collect the decision. This is the same conclusion alert-troubleshooter#37
+# reached for TroubleshootingReports — "an incident report is an audit record and persists when its
+# alert is deleted, which makes an ownerReference exactly the wrong mechanism". The link is a plain
+# reference in spec.producedBy.runRef, so pruning runs never destroys the record of what was decided.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: proposals.review.krateo.io
+spec:
+  group: review.krateo.io
+  scope: Namespaced
+  names:
+    kind: Proposal
+    plural: proposals
+    singular: proposal
+    shortNames: [prop]
+    categories: [krateo]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Kind,       type: string, jsonPath: .spec.kind }
+        - { name: Phase,      type: string, jsonPath: .status.phase }
+        - { name: Confidence, type: string, jsonPath: .spec.confidence }
+        - { name: PR,         type: string, jsonPath: .status.pullRequest.url }
+        - { name: Age,        type: date,   jsonPath: .metadata.creationTimestamp }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [kind, title, rationale, evidence, target, change, fingerprint, producedBy]
+              properties:
+                kind:
+                  type: string
+                  enum: [Alert, Widget, Prompt, Policy, Documentation]
+                  description: What is being proposed. Each maps to a different target repository.
+                title:     { type: string, maxLength: 200 }
+                rationale:
+                  type: string
+                  maxLength: 4000
+                  description: Why this is being proposed, in the agent's own words. Separate from the
+                    evidence below so a reader can tell the ARGUMENT from the FACTS it rests on.
+                evidence:
+                  type: array
+                  minItems: 1
+                  description: >-
+                    REQUIRED, AND THE POINT OF THE WHOLE OBJECT. A proposal with no evidence is an
+                    opinion, and alert-troubleshooter#30 is the record of what that costs: a report
+                    asserted high confidence from an analysis whose tool calls had all failed. Each
+                    entry carries the QUERY, so a reviewer can re-run it and reach their own verdict
+                    instead of trusting the summary.
+                  items:
+                    type: object
+                    required: [source, summary]
+                    properties:
+                      source:  { type: string, enum: [clickhouse, kagent-sessions, kubernetes, repository] }
+                      summary: { type: string, maxLength: 2000 }
+                      query:
+                        type: string
+                        maxLength: 4000
+                        description: The exact query or API call, so the claim is reproducible.
+                      observedCount: { type: integer }
+                confidence:
+                  type: string
+                  enum: [high, medium, low]
+                  description: >-
+                    Must be justified by `evidence`, not asserted alongside it. A high confidence on a
+                    single low-count observation is a defect in the proposal, not a strong finding.
+                target:
+                  type: object
+                  required: [repo]
+                  description: Where the change would land. One repo per proposal — a proposal that
+                    would need edits in two repositories should be split into two.
+                  properties:
+                    repo:   { type: string }
+                    path:   { type: string }
+                    branch: { type: string }
+                change:
+                  type: object
+                  required: [format, content]
+                  properties:
+                    format:  { type: string, enum: [yaml, markdown, diff] }
+                    content: { type: string, maxLength: 65536 }
+                fingerprint:
+                  type: string
+                  maxLength: 128
+                  description: >-
+                    Stable hash of (kind + target + normalised content). WITHOUT THIS THE LOOP IS
+                    UNUSABLE: night two re-proposes everything night one proposed and the reviewer
+                    drowns. The service refuses to create a second Proposal carrying a fingerprint
+                    that an open one already has, and supersedes rather than duplicates.
+                producedBy:
+                  type: object
+                  required: [runRef]
+                  properties:
+                    runRef: { type: string, description: Name of the ReviewRun. A REFERENCE, never an ownerReference. }
+                    agent:  { type: string }
+                    model:  { type: string }
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Proposed, PrOpen, Merged, Rejected, Superseded, Failed]
+                  description: >-
+                    Failed is explicit so a proposal whose pull request could not be opened is visible
+                    rather than sitting forever in Proposed looking merely undecided.
+                pullRequest:
+                  type: object
+                  properties:
+                    url:    { type: string }
+                    number: { type: integer }
+                    state:  { type: string, enum: [open, merged, closed] }
+                decidedAt: { type: string, format: date-time }
+                decidedBy: { type: string }
+                reason:    { type: string }
+                supersededBy:
+                  type: string
+                  description: Name of the Proposal that replaced this one.
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: >-
+                    Set ONLY once the phase is terminal. An open proposal is never collected — it is
+                    an undecided question, and deleting those is how a review loop quietly stops
+                    mattering. kagent's unbounded tables filled a PVC and PANICked Postgres this month;
+                    the answer is a retention policy that distinguishes decided from open, not one
+                    that treats every row the same.
+                error: { type: string }
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type:               { type: string }
+                      status:             { type: string }
+                      reason:             { type: string }
+                      message:            { type: string }
+                      lastTransitionTime: { type: string, format: date-time }

@@ -1,0 +1,20 @@
+# Krateo COMPONENT release — nightly-review, IMAGE build.
+#
+# Uses the shared org reusable so the build stays identical to every other component: multi-arch
+# manifest with provenance and SBOM, no per-repo drift. The Dockerfile is at the repo root, so context
+# ".", and the module name derives the image ghcr.io/<owner>/nightly-review:<tag> — the same name the
+# chart references through .Chart.AppVersion.
+name: release-tag
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+
+jobs:
+  build:
+    uses: krateo-platformops/.github/.github/workflows/component-image-build.yaml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      modules: '[{"mod":"nightly-review","context":"."}]'

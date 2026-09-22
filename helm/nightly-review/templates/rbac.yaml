@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "nightly-review.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+---
+# Deliberately narrow. The service writes ONLY its own two kinds, and READS only what it needs to know
+# what the platform already notices. It has no access to Secrets: the corpus it assembles is handed to a
+# model, and a component that could read Secrets could put one in a prompt.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "nightly-review.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["review.krateo.io"]
+    resources: ["reviewruns", "proposals", "reviewruns/status", "proposals/status"]
+    verbs: ["get", "list", "create", "patch", "update", "delete"]
+  - apiGroups: ["observability.krateo.io"]
+    resources: ["alerts"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "nightly-review.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ include "nightly-review.fullname" . }} }
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "nightly-review.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.config.authnUrl }}
+---
+# Maps this component's Kubernetes ServiceAccount to a Krateo identity, so authn's `serviceaccount`
+# strategy will exchange its projected token for a Krateo JWT. The CR's existence is the allowlist.
+# Mirrors alert-troubleshooter, which is where this pattern is already proven in production.
+apiVersion: serviceaccount.authn.krateo.io/v1alpha1
+kind: ServiceAccount
+metadata:
+  name: {{ include "nightly-review.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  displayName: nightly platform review (intra-service auth)
+  serviceAccountRef:
+    name: {{ include "nightly-review.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+  groups:
+    - krateo:nightly-review
+{{- end }}

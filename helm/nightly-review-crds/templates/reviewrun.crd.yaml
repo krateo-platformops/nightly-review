@@ -1,0 +1,120 @@
+# A ReviewRun is an EVENT: one nightly execution. It records what was examined and what came of it,
+# and it is safe to prune. The Proposals it produced are NOT owned by it (see proposal.crd.yaml) —
+# a decision record must outlive the run that happened to notice it.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: reviewruns.review.krateo.io
+spec:
+  group: review.krateo.io
+  scope: Namespaced
+  names:
+    kind: ReviewRun
+    plural: reviewruns
+    singular: reviewrun
+    shortNames: [rrun]
+    categories: [krateo]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Phase,     type: string, jsonPath: .status.phase }
+        - { name: Proposals, type: integer, jsonPath: .status.proposals.created }
+        - { name: Started,   type: date,   jsonPath: .status.startedAt }
+        - { name: Expires,   type: date,   jsonPath: .status.expiresAt }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [window]
+              properties:
+                window:
+                  type: object
+                  required: [from, to]
+                  description: >-
+                    The closed time range examined. BOUNDED ON PURPOSE, and not only for cost: spans
+                    ingested before the otel-collector JWT redaction landed can still carry unredacted
+                    credentials, so a window that reaches back far enough would pull secrets into the
+                    agent's context and from there into a pull request body.
+                  properties:
+                    from: { type: string, format: date-time }
+                    to:   { type: string, format: date-time }
+                sources:
+                  type: array
+                  description: Evidence sources this run was asked to read.
+                  items: { type: string, enum: [clickhouse, kagent-sessions, kubernetes] }
+                dryRun:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Produce Proposals but open no pull requests. The honest way to evaluate a night's
+                    output before granting the loop the ability to act on it.
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Running, Completed, PartiallyCompleted, Failed]
+                  description: >-
+                    PartiallyCompleted is load-bearing and must not be collapsed into Completed. If
+                    ClickHouse answered and the sessions API 401'd, the run produced a real but
+                    INCOMPLETE picture, and a proposal built on half the evidence should be read
+                    differently. A phase that reports success for a half-finished run is the failure
+                    mode this platform keeps rediscovering.
+                startedAt:  { type: string, format: date-time }
+                finishedAt: { type: string, format: date-time }
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: >-
+                    When the collector may delete this run. Stamped at completion from the chart's
+                    retention policy so the lifetime is visible ON the object rather than implied by
+                    a controller setting nobody can see. Proposals have their own, later, expiry.
+                evidence:
+                  type: object
+                  description: >-
+                    COUNTS AND QUERIES ONLY, never retrieved content. Telemetry rows do not belong in
+                    etcd, and keeping them here would re-create in a CR the very exposure the window
+                    bound above exists to prevent.
+                  additionalProperties:
+                    type: object
+                    properties:
+                      ok:        { type: boolean }
+                      queried:   { type: integer }
+                      returned:  { type: integer }
+                      error:     { type: string }
+                proposals:
+                  type: object
+                  properties:
+                    created:     { type: integer }
+                    superseded:  { type: integer }
+                    deduplicated:
+                      type: integer
+                      description: Suppressed because an open Proposal already carried the same fingerprint.
+                    refs:
+                      type: array
+                      items: { type: string }
+                model:
+                  type: object
+                  properties:
+                    name:         { type: string }
+                    inputTokens:  { type: integer }
+                    outputTokens: { type: integer }
+                error: { type: string }
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type:               { type: string }
+                      status:             { type: string }
+                      reason:             { type: string }
+                      message:            { type: string }
+                      lastTransitionTime: { type: string, format: date-time }

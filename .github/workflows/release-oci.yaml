@@ -1,0 +1,29 @@
+# Publishes this repo's two charts on a release tag via the org-wide reusable, so the release workflow
+# is structural rather than a copy each repo keeps in step by hand. The shared workflow substitutes
+# CHART_VERSION, bakes appVersion from the tag, and GATES the publish on every chart-referenced image
+# existing — nightly-review's chart references ghcr.io/<owner>/nightly-review:<appVersion>, built by
+# release-tag.yaml, so this waits for that image rather than publishing a chart that would
+# ImagePullBackOff on first reconcile.
+name: release-oci
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: "Chart version (CHART_VERSION). Default: the git tag."
+        required: false
+      app_version:
+        description: "App image version (APP_VERSION). Default: latest tag of the app repo."
+        required: false
+
+jobs:
+  release-oci:
+    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      chart_version: ${{ github.event.inputs.chart_version || '' }}
+      app_version: ${{ github.event.inputs.app_version || '' }}

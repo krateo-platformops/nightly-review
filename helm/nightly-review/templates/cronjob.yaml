@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "nightly-review.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  suspend: {{ .Values.suspend }}
+  # A missed night is skipped, never caught up. Two reviews firing back to back would read overlapping
+  # windows and propose the same things twice, and the second would be deduplicated by fingerprint into
+  # a no-op that still cost a full model run.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0   # a failed run is recorded on the ReviewRun and waits for tomorrow; retrying a
+                        # half-finished review would re-spend a model call to reach the same verdict
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "nightly-review.fullname" . }}
+          containers:
+            - name: review
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: NAMESPACE
+                  value: {{ .Release.Namespace }}
+                - name: WINDOW_HOURS
+                  value: {{ .Values.windowHours | quote }}
+                - name: DRY_RUN
+                  value: {{ .Values.dryRun | quote }}
+                - name: RUN_RETENTION_DAYS
+                  value: {{ .Values.retention.runDays | quote }}
+                - name: AUTOPILOT_A2A_URL
+                  value: {{ .Values.config.autopilotA2aUrl | quote }}
+                - name: AUTHN_URL
+                  value: {{ .Values.config.authnUrl | quote }}
+                - name: KAGENT_API_URL
+                  value: {{ .Values.config.kagentApiUrl | quote }}
+                - name: CLICKHOUSE_URL
+                  value: {{ .Values.config.clickhouseUrl | quote }}
+                - name: EVIDENCE_MAX_CHARS
+                  value: {{ .Values.config.evidenceMaxChars | quote }}
+                # Both are JSON blobs so the allowlist and the queries stay reviewable as data.
+                - name: PROPOSAL_ALLOWLIST
+                  value: {{ .Values.proposalAllowlist | toJson | quote }}
+                - name: CLICKHOUSE_QUERIES
+                  value: {{ .Values.clickhouseQueries | toJson | quote }}
+                {{- with .Values.secrets.github.name }}
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.github.key }} }
+                {{- end }}
+                {{- with .Values.secrets.clickhouse.name }}
+                - name: CLICKHOUSE_USER
+                  valueFrom:
+                    secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.clickhouse.userKey }} }
+                - name: CLICKHOUSE_PASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.clickhouse.passwordKey }} }
+                {{- end }}
+              volumeMounts:
+                {{- if .Values.config.authnUrl }}
+                - name: authn-token
+                  mountPath: /var/run/secrets/krateo/authn
+                  readOnly: true
+                {{- end }}
+              resources: {{- toYaml .Values.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities: { drop: ["ALL"] }
+          volumes:
+            {{- if .Values.config.authnUrl }}
+            # Audience-scoped: this token is only good for authn, so a leak cannot be replayed against
+            # the apiserver.
+            - name: authn-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      audience: authn
+                      expirationSeconds: 3600
+            {{- end }}
