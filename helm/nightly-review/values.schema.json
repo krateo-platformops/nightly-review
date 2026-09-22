@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "title": "Nightly Platform Review",
+  "description": "Reads this platform's telemetry and agent conversations once a night and PROPOSES changes as pull requests. Applies nothing. Ships inert: dryRun true and an empty proposalAllowlist. REQUIRED BY core-provider, which derives the Composition CRD from this file.",
+  "additionalProperties": false,
+  "properties": {
+    "global": {
+      "type": "object",
+      "title": "Global values (injected by the Krateo composition engine)"
+    },
+    "schedule": {
+      "type": "string"
+    },
+    "windowHours": {
+      "type": "integer"
+    },
+    "dryRun": {
+      "type": "boolean"
+    },
+    "suspend": {
+      "type": "boolean"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string"
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runDays": {
+          "type": "integer"
+        },
+        "decidedProposalDays": {
+          "type": "integer"
+        }
+      }
+    },
+    "proposalAllowlist": {
+      "type": "object",
+      "title": "Where each proposal kind may open a pull request",
+      "description": "EMPTY MEANS DENY ALL. target.repo is model-chosen from a corpus containing user chat text; without this list a sentence in a conversation could aim the write credential anywhere. A proposal naming a repo outside its kind's list is refused, never redirected.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "clickhouseQueries": {
+      "type": "object",
+      "title": "Evidence queries",
+      "description": "Named SQL as configuration rather than code, so it is reviewable and adaptable without a new image. {from}/{to} are substituted; nothing else is.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authnUrl": {
+          "type": "string"
+        },
+        "autopilotA2aUrl": {
+          "type": "string"
+        },
+        "kagentApiUrl": {
+          "type": "string"
+        },
+        "clickhouseUrl": {
+          "type": "string"
+        },
+        "evidenceMaxChars": {
+          "type": "integer"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "github": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "clickhouse": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "userKey": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "object"
+    }
+  }
+}

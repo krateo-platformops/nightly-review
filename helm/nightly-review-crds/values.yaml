@@ -1,0 +1,3 @@
+# Default values for nightly-review-crds (the dedicated CRD chart).
+# The CRDs are static; there are no tunable values. Golden rule: CRDs live in a separate chart with a
+# separate lifecycle, so an app-version bump never migrates or tears them down.
