@@ -1,0 +1,30 @@
+# Runs the trust-boundary suite on every pull request and every push to main.
+#
+# THE WORKFLOW IS THE POINT, NOT THE TESTS. frontend#334 is the cautionary case: 1891 tests sat in that
+# repo while three regressions shipped on one code path, because nothing ever executed them. A control
+# nobody runs is a comment, and that applies as much to an allowlist check as to a lint rule.
+#
+# `python -m pytest`, never a bare runner invocation — the module form uses the interpreter this job
+# actually installed into, so a passing run cannot be a different interpreter's.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install --no-cache-dir pytest==8.3.3 jsonschema==4.23.0
+      - name: Trust-boundary tests
+        run: python -m pytest tests/ -q
