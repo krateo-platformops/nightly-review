@@ -1,4 +1,4 @@
-"""The session-content extractor, and specifically its behaviour when it does NOT recognise a shape.
+"""The session-content extractor (sessiontext.py — stdlib only, so these stay hermetic), and specifically its behaviour when it does NOT recognise a shape.
 
 Event.Data is an opaque JSON string: kagent persists the ADK event verbatim and the stored shape is
 not pinned anywhere readable from outside the cluster. So the extractor tries several plausible
@@ -11,7 +11,7 @@ import sys
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from evidence import _event_text  # noqa: E402
+from sessiontext import _event_text  # noqa: E402
 
 
 def test_content_parts_shape():
