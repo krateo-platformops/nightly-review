@@ -37,11 +37,51 @@ proposalAllowlist: {}
 # The evidence queries, as configuration rather than code, so they are reviewable and adaptable to your
 # ClickHouse schema without a new image. `{from}` and `{to}` are substituted; nothing else is.
 # A model is never asked to author SQL against a store that has held credentials.
-clickhouseQueries: {}
-  # errorsByService: |
-  #   SELECT ServiceName, count() AS n, any(Body) AS sample
-  #   FROM otel_logs WHERE Timestamp BETWEEN '{from}' AND '{to}' AND SeverityText IN ('ERROR','FATAL')
-  #   GROUP BY ServiceName ORDER BY n DESC LIMIT 25
+#
+# THESE DEFAULTS ARE WRITTEN FOR THE SCHEMA KRATEO ACTUALLY WRITES, not the one the OTel docs imply.
+# Grounded in the deployed collector config (database `default`, logs_table_name `otel_logs`) and in
+# two facts that trip everyone who writes these from memory:
+#   * SeverityText IS ALWAYS EMPTY here. Severity travels in the text. A query filtering
+#     SeverityText IN ('ERROR','FATAL') returns nothing, forever, and looks like a quiet platform.
+#   * Kubernetes events are distinguished by ResourceAttributes['telemetry.source'] = 'k8s-events',
+#     with the event itself as JSON in Body; container logs carry '' there.
+#
+# They AGGREGATE rather than return rows. The model is being asked for judgement about patterns, and
+# counts are both far cheaper in context and far less likely to carry a credential out of a log line
+# than raw Body text would be.
+clickhouseQueries:
+  errorPatternsByService: |
+    SELECT ServiceName,
+           ResourceAttributes['k8s.namespace.name'] AS ns,
+           count() AS n
+    FROM otel_logs
+    WHERE Timestamp BETWEEN '{from}' AND '{to}'
+      AND ResourceAttributes['telemetry.source'] = ''
+      AND (position(Body, 'ERROR') > 0 OR position(Body, 'error') > 0
+           OR position(Body, 'Failed') > 0 OR position(Body, 'panic') > 0)
+    GROUP BY ServiceName, ns
+    ORDER BY n DESC
+    LIMIT 25
+
+  kubernetesEventReasons: |
+    SELECT JSONExtractString(Body, 'object', 'reason')  AS reason,
+           JSONExtractString(Body, 'object', 'kind')    AS kind,
+           count() AS n
+    FROM otel_logs
+    WHERE Timestamp BETWEEN '{from}' AND '{to}'
+      AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+      AND reason != ''
+    GROUP BY reason, kind
+    ORDER BY n DESC
+    LIMIT 25
+
+  logVolumeByService: |
+    SELECT ServiceName, count() AS n
+    FROM otel_logs
+    WHERE Timestamp BETWEEN '{from}' AND '{to}'
+    GROUP BY ServiceName
+    ORDER BY n DESC
+    LIMIT 25
 
 config:
   authnUrl: ""                 # enables the SA -> Krateo JWT exchange; required for kagent sessions
