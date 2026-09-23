@@ -22,17 +22,35 @@ retention:
   decidedProposalDays: 180     # a DECIDED proposal is an audit record; keep it a long time
                                # an OPEN proposal is never collected — it is an undecided question
 
-# Which repositories each proposal kind may target. EMPTY MEANS DENY ALL.
-# `target.repo` is chosen by the model from a corpus that includes user-written chat text, so without
-# this list one sentence in a conversation could aim this service's write credential wherever it liked.
-# A proposal naming anything outside the list is refused, never redirected, and the refusal is recorded
-# on the run as a possible injection signal.
+# Which repositories each proposal kind may target. EMPTY MEANS DENY ALL, and an unlisted kind is
+# denied too — verified by test, after a mutation showed an unconfigured kind silently accepting
+# whatever repository the model named.
+#
+# THIS IS A BOUNDARY, NOT A ROUTING TABLE. Each kind may permit SEVERAL repositories, and the agent
+# chooses among them — it is the thing holding the evidence, so it knows whether a recurring question
+# is about the reconcile engine or about RESTActions. Pinning one repo per kind would throw that
+# judgement away and misfile every proposal for a kind that spans components.
+#
+# THE DESCRIPTIONS ARE LOAD-BEARING. They are passed to the model as part of the ask, because a choice
+# it cannot see the options for is not a choice. Write them as "what lives here", not as a repo
+# summary — the model is matching evidence to subject matter.
+#
+# `target.repo` remains model-chosen from a corpus containing user-written chat text, so anything
+# outside this list is refused, never redirected, and the refusal is recorded on the run as a possible
+# injection signal.
 proposalAllowlist: {}
-  # Alert:         ["krateo-platformops/krateo-observability"]
-  # Widget:        ["krateo-blueprints/portal-pages"]
-  # Prompt:        ["krateo-agentiko/autopilot"]
-  # Policy:        ["krateo-agentiko/agentgateway-policies"]
-  # Documentation: ["krateo-platformops/installer"]
+  # Documentation:
+  #   krateo-platformops/core-provider: "compositions, CompositionDefinitions, the reconcile engine"
+  #   krateo-platformops/snowplow:      "RESTActions, the portal content API, widget data"
+  #   krateo-platformops/installer:     "installing and upgrading the platform itself"
+  # Alert:
+  #   krateo-platformops/krateo-observability: "alert definitions and the observability stack"
+  # Widget:
+  #   krateo-blueprints/portal-pages: "portal pages and the widgets on them"
+  # Prompt:
+  #   krateo-agentiko/autopilot: "the orchestrator prompt and its portal protocol"
+  # Policy:
+  #   krateo-agentiko/agentgateway-policies: "gateway routes, JWT and authorization policy"
 
 # The evidence queries, as configuration rather than code, so they are reviewable and adaptable to your
 # ClickHouse schema without a new image. `{from}` and `{to}` are substituted; nothing else is.
