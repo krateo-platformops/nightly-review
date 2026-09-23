@@ -51,12 +51,24 @@
     "proposalAllowlist": {
       "type": "object",
       "title": "Where each proposal kind may open a pull request",
-      "description": "EMPTY MEANS DENY ALL. target.repo is model-chosen from a corpus containing user chat text; without this list a sentence in a conversation could aim the write credential anywhere. A proposal naming a repo outside its kind's list is refused, never redirected.",
+      "description": "EMPTY MEANS DENY ALL, and a kind absent from this map is denied too. target.repo is model-chosen from a corpus containing user chat text; without this list a sentence in a conversation could aim the write credential anywhere. A proposal naming a repo outside its kind's list is refused, never redirected. A kind may permit SEVERAL repositories: this is a boundary, not a routing table, and the agent chooses among them from the evidence it holds. Prefer the mapping form \u2014 the descriptions are passed to the model so it can choose the right home rather than the first one.",
       "additionalProperties": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        }
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Permitted repositories, no descriptions"
+          },
+          {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Permitted repositories mapped to what each one is for"
+          }
+        ]
       }
     },
     "clickhouseQueries": {

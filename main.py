@@ -72,13 +72,13 @@ def main():
         return 1
 
     try:
+        allowlist = P.load_allowlist(os.environ.get("PROPOSAL_ALLOWLIST", "{}"))
         payload, raw, usage = autopilot.ask(
-            prompt.SYSTEM, prompt.build_user_message(window, blocks), run_name, token)
+            prompt.SYSTEM,
+            prompt.build_user_message(window, blocks, P.describe_targets(allowlist)),
+            run_name, token)
         kept, notes = P.validate_batch(
-            payload,
-            P.load_allowlist(os.environ.get("PROPOSAL_ALLOWLIST", "{}")),
-            lambda p: jsonschema.validate(p, prompt.RESPONSE_SCHEMA),
-        )
+            payload, allowlist, lambda p: jsonschema.validate(p, prompt.RESPONSE_SCHEMA))
     except Exception as exc:                                  # noqa: BLE001
         st |= {"phase": "Failed", "finishedAt": _now().isoformat(), "error": f"{type(exc).__name__}: {exc}"[:500]}
         _patch(api, run_name, st)

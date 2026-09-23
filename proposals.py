@@ -17,10 +17,58 @@ import re
 # enough to aim this service's write credential at a repository of someone else's choosing. The
 # allowlist is configuration, not a guess baked into code, and a proposal naming anything outside it is
 # refused rather than redirected — a silently rewritten target is harder to notice than a refusal.
+#
+# IT IS A BOUNDARY, NOT A ROUTING TABLE. An earlier shape mapped each kind to ONE repo, which threw
+# away the only judgement worth having here: the agent is the thing holding the evidence, so it knows
+# whether a recurring question is about the reconcile engine or about RESTActions, and therefore which
+# repository the answer belongs in. A single hardcoded target guarantees wrong-repo proposals for any
+# kind that spans components. So each kind maps to a SET of permitted repos, each carrying a short
+# description of what it is for — and those descriptions are given to the model, because a choice it
+# cannot see the options for is not a choice.
+#
+# Telling the model what is permitted is deliberate. It puts the allowlist in reach of an injected
+# instruction, but injection was already refused by this check and remains so; what changes is that a
+# legitimate proposal can be aimed WELL instead of guessed at. An agent choosing blind produces
+# mostly-refused output, which teaches a reviewer nothing and trains them to ignore the notes.
 def load_allowlist(raw):
-    """raw: JSON mapping of proposal kind -> list of permitted repos (from chart values)."""
+    """raw: JSON from chart values, either shape:
+
+        {"Documentation": ["org/repo", ...]}                     # set only
+        {"Documentation": {"org/repo": "what it is for", ...}}    # set + purpose
+
+    Returns {kind: {repo: purpose}}. The list form is accepted so an existing config keeps working;
+    its repos simply carry an empty purpose and the model is told less about them.
+    """
     allow = json.loads(raw) if raw else {}
-    return {k: set(v) for k, v in allow.items()}
+    out = {}
+    for kind, repos in allow.items():
+        if isinstance(repos, dict):
+            out[kind] = {str(r): str(p or "") for r, p in repos.items()}
+        else:
+            out[kind] = {str(r): "" for r in (repos or [])}
+    return out
+
+
+def describe_targets(allowlist):
+    """The permitted targets, rendered for the model. Ordered so the prompt is stable between nights —
+    an unstable prompt makes two runs incomparable for no benefit."""
+    if not allowlist:
+        return ("No proposal targets are configured, so every proposal will be refused. "
+                "Report this as a Documentation finding and propose nothing else.")
+    lines = []
+    for kind in sorted(allowlist):
+        repos = allowlist[kind]
+        if not repos:
+            lines.append(f"  {kind}: (none permitted — do not propose this kind)")
+            continue
+        lines.append(f"  {kind}:")
+        for repo in sorted(repos):
+            purpose = repos[repo]
+            lines.append(f"    - {repo}" + (f" — {purpose}" if purpose else ""))
+    return ("Permitted targets. Choose the repository whose subject matter the evidence actually\n"
+            "belongs to; a proposal aimed at a plausible-but-wrong repository wastes the reviewer's\n"
+            "time as surely as a wrong proposal. Naming anything not listed here has the proposal\n"
+            "refused.\n\n" + "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -100,7 +148,7 @@ def validate_batch(payload, allowlist, schema_check):
             notes.append(f"proposal[{i}] contained a secret-shaped string; redacted before storage")
 
         repo = clean["target"]["repo"]
-        permitted = allowlist.get(clean["kind"], set())
+        permitted = allowlist.get(clean["kind"], {})
         if repo not in permitted:
             # Refuse this proposal, keep the rest, and say so loudly. This is the single most likely
             # signal of prompt injection reaching the model, so it must never be silent.

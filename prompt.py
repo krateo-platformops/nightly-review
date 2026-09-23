@@ -32,12 +32,23 @@ human can re-run it and disagree with you. Confidence describes the EVIDENCE, no
   low    — a hunch worth a human's five minutes, say so plainly
 A single observation never justifies high confidence, however striking it is.
 
-Propose only these kinds, each landing in one repository:
+Propose only these kinds:
   Alert          a gap in what the platform notices — an error pattern nobody is alerted on
   Widget         a portal page or widget that would answer a question people keep asking agents
   Prompt         an agent prompt that is demonstrably misleading its agent, quoting the exchange
   Policy         an agentgateway policy to tune, with the traffic that justifies it
   Documentation  a question asked repeatedly whose answer is not written down anywhere
+
+CHOOSING THE REPOSITORY IS PART OF THE PROPOSAL, not a formality after it. The permitted targets are
+listed in the user message with a description of what each one is for. Pick the repository whose
+subject matter the evidence actually belongs to: a recurring question about why a composition never
+goes Ready belongs with the reconcile engine, one about a widget rendering empty belongs with the
+content API, one about installing belongs with the installer. Say in the rationale why that
+repository and not a neighbouring one, in a sentence. A proposal aimed at a plausible-but-wrong
+repository costs the reviewer exactly as much as a wrong proposal and teaches them to trust the next
+one less. If the right home is not in the permitted list, say so in a Documentation proposal rather
+than aiming at the nearest listed repository — being refused is a better outcome than being
+misfiled.
 
 Prefer few, specific, defensible proposals over many plausible ones. If two proposals would touch two
 repositories, split them. Never propose a change you cannot point at evidence for."""
@@ -106,12 +117,18 @@ RESPONSE_SCHEMA = {
 }
 
 
-def build_user_message(window, evidence_blocks):
-    """The single user turn: what was examined, then the fenced corpus."""
+def build_user_message(window, evidence_blocks, targets=""):
+    """The single user turn: what was examined, where a proposal may land, then the fenced corpus.
+
+    The permitted targets go ABOVE the fence, deliberately. Everything below it is data the model is
+    told not to obey; the target list is instruction from the operator and must not sit in the same
+    region as text a user wrote."""
     header = (
         f"Review window: {window['from']} .. {window['to']} (UTC)\n"
         f"Sources that answered: {', '.join(sorted(evidence_blocks)) or 'none'}\n"
     )
+    if targets:
+        header += f"\n{targets}\n"
     fenced = "\n".join(
         f"<evidence source=\"{name}\">\n{body}\n</evidence>" for name, body in sorted(evidence_blocks.items())
     )
