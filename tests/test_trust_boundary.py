@@ -38,8 +38,11 @@ def test_a_proposal_aimed_outside_the_allowlist_is_refused_not_redirected():
     kept, notes = P.validate_batch(
         {"proposals": [_p(target={"repo": "attacker/exfil", "path": ".github/workflows/x.yml"})]},
         ALLOW, NOOP)
-    assert kept == []
     assert any("REFUSED" in n and "attacker/exfil" in n for n in notes)
+    # NOT REDIRECTED is the point of the name: the target is recorded exactly as the model asked for it,
+    # because a silently rewritten target is harder to notice than a refusal. And not publishable.
+    assert len(kept) == 1 and kept[0]["target"]["repo"] == "attacker/exfil"
+    assert not P.is_publishable(kept[0])
 
 
 def test_the_refusal_names_injection_so_it_is_never_quiet():
@@ -50,7 +53,11 @@ def test_the_refusal_names_injection_so_it_is_never_quiet():
 def test_a_permitted_repo_for_the_WRONG_kind_is_still_refused():
     """org/docs is allowlisted, but only for Documentation. Per-kind, not a global set."""
     kept, _ = P.validate_batch({"proposals": [_p(target={"repo": "org/docs"})]}, ALLOW, NOOP)
-    assert kept == []
+    # Recorded, marked, and NOT publishable. It is stored rather than dropped so the refusal can be read
+    # (with an empty allowlist, dropping meant a review produced nothing at all), but the guarantee that
+    # matters is the second assertion: it can never reach a repository.
+    assert len(kept) == 1 and kept[0]["refused"]
+    assert not P.is_publishable(kept[0])
 
 
 # --- redaction ---------------------------------------------------------------------------------
@@ -127,4 +134,28 @@ def test_a_non_object_response_is_refused_whole():
 def test_one_bad_proposal_does_not_discard_the_good_ones():
     kept, notes = P.validate_batch(
         {"proposals": [_p(), _p(target={"repo": "attacker/x"}), _p()]}, ALLOW, NOOP)
-    assert len(kept) == 2 and any("REFUSED" in n for n in notes)
+    assert len(kept) == 3 and any("REFUSED" in n for n in notes)
+    # two publishable, one refused — the good ones are untouched by their neighbour
+    assert len([p for p in kept if P.is_publishable(p)]) == 2
+    assert [p["target"]["repo"] for p in kept if not P.is_publishable(p)] == ["attacker/x"]
+
+
+def test_the_shipped_default_still_produces_something_to_read():
+    """dryRun + an EMPTY allowlist is what a fresh install runs, and values.yaml promises a review "you
+    can read". Every proposal is refused in that configuration, so refusals must be RECORDED: when they
+    were dropped instead, the default produced zero Proposal objects and the promise was false."""
+    kept, notes = P.validate_batch({"proposals": [_p(), _p(title="another")]}, P.load_allowlist("{}"), NOOP)
+    assert len(kept) == 2
+    assert all(not P.is_publishable(p) for p in kept)     # nothing can be written
+    assert all(p.get("fingerprint") for p in kept)        # each still gets a stable name
+    assert sum("REFUSED" in n for n in notes) == 2
+
+
+def test_a_bad_item_is_dropped_and_its_siblings_survive():
+    """Per-item validation. One wrong enum used to raise over the whole payload and discard the night —
+    the cheapest way for an injected instruction to suppress the review entirely."""
+    import jsonschema, prompt
+    item = lambda p: jsonschema.validate(p, prompt.ITEM_SCHEMA)
+    good, bad = _p(), _p(confidence="very high")
+    kept, notes = P.validate_batch({"proposals": [good, bad, good]}, ALLOW, NOOP, item_check=item)
+    assert len(kept) == 2 and any(n.startswith("DROPPED") for n in notes)
