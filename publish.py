@@ -9,6 +9,7 @@ import datetime as dt
 import os
 
 import requests
+from kubernetes.client.rest import ApiException
 
 GH_API = os.environ.get("GITHUB_API", "https://api.github.com")
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -116,7 +117,18 @@ def create_proposal_cr(api, proposal, run_name, pr=None, phase="Proposed", error
                  ("kind", "title", "rationale", "evidence", "confidence", "target", "change", "fingerprint")}
                 | {"producedBy": {"runRef": run_name, "agent": "krateo-autopilot"}},
     }
-    created = api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals", obj)
+    try:
+        created = api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals", obj)
+    except ApiException as exc:
+        # ALREADY THERE, AND THAT IS NORMAL NOW. The name is derived from the fingerprint, and a refused
+        # proposal recurs every night with the same one (a refusal is not `open`, so dedup does not
+        # suppress it). Before this, night two died on a 409 from a name night one had created.
+        if exc.status != 409:
+            raise
+        api.patch_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals", obj["metadata"]["name"],
+                                           {"spec": obj["spec"]})
+        created = api.get_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals",
+                                                   obj["metadata"]["name"])
     status = {"phase": phase, "conditions": []}
     if pr:
         status |= {"phase": "PrOpen", "pullRequest": pr}

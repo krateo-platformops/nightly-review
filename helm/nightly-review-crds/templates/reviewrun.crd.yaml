@@ -97,6 +97,13 @@ spec:
                     deduplicated:
                       type: integer
                       description: Suppressed because an open Proposal already carried the same fingerprint.
+                    refused:
+                      type: integer
+                      description: >-
+                        Recorded as Proposal objects in phase Refused and never published, because the
+                        target was outside the allowlist for that kind. Counted separately from created so
+                        "nothing was proposed tonight" and "everything was refused" cannot be confused —
+                        with an empty allowlist the second is the expected outcome.
                     refs:
                       type: array
                       items: { type: string }
