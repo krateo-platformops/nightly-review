@@ -98,7 +98,14 @@ def kagent_sessions(token, limit=50):
             if sessions is not None:
                 break
     if sessions is None:
-        return None, {"ok": False, "error": f"no session list found in response ({shape})", "shape": shape}
+        # kagent OMITS `data` on a successful empty list: /api/sessions answers
+        # {"error":false,"message":"Successfully listed sessions"} with no list at all, while /api/agents
+        # returns {"error":false,"data":[…]}. Verified against the live API. So error:false + no list is
+        # EMPTY, not malformed — calling it malformed was my own misreading in 0.1.2.
+        if isinstance(payload, dict) and payload.get("error") in (False, None):
+            sessions = []
+        else:
+            return None, {"ok": False, "error": f"no session list found in response ({shape})", "shape": shape}
 
     lines, read = [], 0
     for s in sessions[:limit]:

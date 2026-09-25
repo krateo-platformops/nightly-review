@@ -112,10 +112,15 @@ spec:
               properties:
                 phase:
                   type: string
-                  enum: [Proposed, PrOpen, Merged, Rejected, Superseded, Failed]
+                  enum: [Proposed, PrOpen, Merged, Rejected, Superseded, Refused, Failed]
                   description: >-
                     Failed is explicit so a proposal whose pull request could not be opened is visible
-                    rather than sitting forever in Proposed looking merely undecided.
+                    rather than sitting forever in Proposed looking merely undecided. Refused is the
+                    service declining to publish it at all — its target was outside the allowlist for its
+                    kind — and it is a STORED phase, not a discarded one: a refusal that leaves no object
+                    behind is the weakest possible form of the injection signal the allowlist exists to
+                    raise, and with the shipped default (an empty allowlist) it would mean a review that
+                    produced nothing readable at all.
                 pullRequest:
                   type: object
                   properties:

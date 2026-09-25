@@ -80,6 +80,7 @@ def main():
             payload,
             P.load_allowlist(os.environ.get("PROPOSAL_ALLOWLIST", "{}")),
             lambda p: jsonschema.validate(p, prompt.RESPONSE_SCHEMA),
+            item_check=lambda p: jsonschema.validate(p, prompt.ITEM_SCHEMA),
         )
     except Exception as exc:                                  # noqa: BLE001
         st |= {"phase": "Failed", "finishedAt": _now().isoformat(), "error": f"{type(exc).__name__}: {exc}"[:500]}
@@ -88,13 +89,19 @@ def main():
         return 1
 
     already = publish.open_fingerprints(api)
-    created, deduped, refs = 0, 0, []
+    created, deduped, refused, refs = 0, 0, 0, []
     for prop in kept:
         if prop["fingerprint"] in already:
             deduped += 1
             continue
         pr = None
         err = None
+        # A REFUSED PROPOSAL IS RECORDED AND NEVER PUBLISHED. The allowlist gates the write credential,
+        # so the check that matters is this one, here, next to the only code that can reach a repository.
+        if prop.get("refused"):
+            refs.append(publish.create_proposal_cr(api, prop, run_name, phase="Refused"))
+            refused += 1
+            continue
         if not DRY_RUN:
             try:
                 pr = publish.open_pull_request(prop, run_name)
@@ -107,7 +114,8 @@ def main():
     st |= {
         "phase": "PartiallyCompleted" if degraded else "Completed",
         "finishedAt": _now().isoformat(),
-        "proposals": {"created": created, "deduplicated": deduped, "superseded": 0, "refs": refs},
+        "proposals": {"created": created, "deduplicated": deduped, "refused": refused,
+                      "superseded": 0, "refs": refs},
         "model": {"name": usage.get("model", ""),
                   "inputTokens": usage.get("inputTokens", 0),
                   "outputTokens": usage.get("outputTokens", 0)},
@@ -120,7 +128,8 @@ def main():
                              "message": " | ".join(notes)[:2000],
                              "lastTransitionTime": _now().isoformat()}]
     _patch(api, run_name, st)
-    print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, degraded={degraded}", flush=True)
+    print(f"[run] {st['phase']}: {created} proposed, {refused} refused, {deduped} deduped, "
+          f"degraded={degraded}", flush=True)
     return 0
 
 

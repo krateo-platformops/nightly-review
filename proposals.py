@@ -87,14 +87,28 @@ class Refused(Exception):
     model meant is exactly the guess this service exists not to make."""
 
 
-def validate_batch(payload, allowlist, schema_check):
-    """Returns (proposals, notes). Raises Refused on anything structurally wrong."""
+def validate_batch(payload, allowlist, schema_check, item_check=None):
+    """Returns (proposals, notes). Raises Refused only when the RESPONSE ENVELOPE is unusable.
+
+    A SINGLE BAD FIELD USED TO DISCARD THE WHOLE NIGHT. schema_check ran over the entire payload, so one
+    proposal with one wrong enum raised and eleven good ones went in the bin with it — and because the
+    corpus is attacker-influenceable, inducing one schema violation was the cheapest way to suppress the
+    review entirely. The envelope is still validated strictly; each proposal is now validated on its own
+    and a bad one is dropped WITH A NOTE while its siblings survive."""
     if not isinstance(payload, dict):
         raise Refused(f"response was {type(payload).__name__}, expected an object")
-    schema_check(payload)                       # jsonschema; raises on mismatch
+    if not isinstance(payload.get("proposals"), list):
+        raise Refused("response has no `proposals` array")
+    schema_check({"proposals": []} if item_check else payload)   # envelope only when items are checked
 
     notes, kept = [], []
     for i, raw in enumerate(payload.get("proposals", [])):
+        if item_check is not None:
+            try:
+                item_check(raw)
+            except Exception as exc:                              # noqa: BLE001
+                notes.append(f"DROPPED proposal[{i}]: does not match the contract ({str(exc)[:160]})")
+                continue
         clean = redact(raw)
         if clean != raw:
             notes.append(f"proposal[{i}] contained a secret-shaped string; redacted before storage")
@@ -102,16 +116,17 @@ def validate_batch(payload, allowlist, schema_check):
         repo = clean["target"]["repo"]
         permitted = allowlist.get(clean["kind"], set())
         if repo not in permitted:
-            # Refuse this proposal, keep the rest, and say so loudly. This is the single most likely
-            # signal of prompt injection reaching the model, so it must never be silent.
-            notes.append(
-                f"REFUSED proposal[{i}] ({clean['kind']}): target repo {repo!r} is not in the "
-                f"allowlist for that kind. This can indicate injected instructions in the corpus."
-            )
-            continue
+            # REFUSED, RECORDED, NOT DISCARDED. It still must never reach a repository — publish skips a
+            # refused proposal, which is where the write credential lives — but dropping it from the
+            # result set meant the shipped default (dryRun + an EMPTY allowlist) produced NO Proposal
+            # objects at all, while values.yaml promised a review "you can read". A refusal you cannot
+            # read is also the weakest possible form of the injection signal this check exists to raise.
+            clean["refused"] = (f"target repo {repo!r} is not in the allowlist for kind {clean['kind']}; "
+                                f"this can indicate injected instructions in the corpus")
+            notes.append(f"REFUSED proposal[{i}] ({clean['kind']}): {clean['refused']}")
 
         # Confidence must be earned by the evidence, not asserted beside it (alert-troubleshooter#30).
-        observed = sum(e.get("observedCount") or 0 for e in clean["evidence"])
+        observed = sum(e.get("observedCount") or 0 for e in clean.get("evidence") or [])
         if clean["confidence"] == "high" and len(clean["evidence"]) < 2 and observed < 2:
             clean["confidence"] = "medium"
             notes.append(
