@@ -152,4 +152,15 @@ def ask(system, user_message, run_name, token=None):
             return extract_json(c), c, usage
         except (ValueError, json.JSONDecodeError) as exc:
             last_err = exc
-    raise ValueError(f"no JSON object in any of {len(ordered)} candidate texts ({last_err})")
+
+    # LAST RESORT, for a long answer streamed as fragments. Events carry `metadata.adk_partial`, so a
+    # reply larger than one chunk can arrive split across events, and then NO single candidate holds the
+    # whole object. Joining in arrival order is what the original code did; it is wrong as a FIRST move
+    # (the final snapshot repeats earlier text, and two spliced objects never parse) and right as a last
+    # one, because a fragmented answer is otherwise unrecoverable.
+    joined = "".join(candidates)
+    try:
+        return extract_json(joined), joined, usage
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"no JSON object in {len(ordered)} candidates nor in their concatenation "
+                         f"({len(joined)} chars; last error: {exc or last_err})")
