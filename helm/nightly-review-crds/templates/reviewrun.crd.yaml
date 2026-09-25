@@ -89,6 +89,25 @@ spec:
                       queried:   { type: integer }
                       returned:  { type: integer }
                       error:     { type: string }
+                      empty:
+                        type: boolean
+                        description: >-
+                          The source ANSWERED and returned nothing. Distinct from ok:false (it did not
+                          answer) and from a low `returned` (it answered with little): a source that
+                          returned nothing has not been read, so the run counts it as degraded and cannot
+                          report itself Completed. Without this field the three were indistinguishable in
+                          the record — `returned: 0` meant "no rows", "an identity that sees none" or "a
+                          shape we did not parse", and the run could not say which.
+                      note:
+                        type: string
+                        description: >-
+                          Why this source returned what it did, in words, when the numbers cannot say it.
+                      shape:
+                        type: string
+                        description: >-
+                          The top-level shape of the response, recorded when a source returns something
+                          unexpected — kagent's /api/sessions omits `data` entirely on an empty list,
+                          which a naive reader turns into an empty list and reports as success.
                 proposals:
                   type: object
                   properties:
