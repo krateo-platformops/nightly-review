@@ -82,6 +82,15 @@ def fingerprint(proposal):
 # ---------------------------------------------------------------------------------------------
 # 4. VALIDATION
 # ---------------------------------------------------------------------------------------------
+def is_publishable(proposal):
+    """THE CREDENTIAL GATE, as one named predicate instead of an inline `if` at the call site.
+
+    A refused proposal is stored so it can be read, and must never be written anywhere. That rule was a
+    `continue` inside validation, which meant the guarantee lived in whichever loop happened to iterate
+    the results; now the publisher asks this, and a test can ask it too."""
+    return not proposal.get("refused")
+
+
 class Refused(Exception):
     """Raised for the WHOLE batch. A partially valid response is not salvaged: deciding which half the
     model meant is exactly the guess this service exists not to make."""
