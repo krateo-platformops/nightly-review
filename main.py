@@ -59,7 +59,9 @@ def main():
         if body:
             blocks[name] = body
 
-    degraded = [n for n, s in st["evidence"].items() if not s.get("ok")]
+    # `empty` counts as degraded: a source that answered but returned nothing has not been read, and a
+    # review that saw no agent conversations must not present itself as a complete one.
+    degraded = [n for n, s in st["evidence"].items() if not s.get("ok") or s.get("empty")]
 
     if not blocks:
         # Nothing answered. This is a FAILED run, not an uneventful one — the distinction matters

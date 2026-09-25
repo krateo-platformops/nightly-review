@@ -97,7 +97,16 @@ def ask(system, user_message, run_name, token=None):
     resp = requests.post(AUTOPILOT_A2A, json=payload, headers=headers, timeout=A2A_TIMEOUT, stream=True)
     resp.raise_for_status()
 
-    chunks, usage = [], {}
+    # WHERE THE ANSWER ACTUALLY IS. kagent's A2A executor does not send `result.message.parts`; it sends
+    # TaskStatusUpdateEvents carrying `result.status.message.parts`, artifact events carrying
+    # `result.artifact.parts`, and a final task snapshot carrying `result.history[]`. Reading only
+    # `result.message`/`result.parts` harvested nothing from a run that had worked perfectly, and the
+    # empty string then surfaced as "empty response" — a failure message that named the wrong component.
+    def texts(container):
+        return [p["text"] for p in (container or {}).get("parts") or []
+                if p.get("kind") == "text" and p.get("text")]
+
+    candidates, usage, last_state, events = [], {}, None, 0
     for line in resp.iter_lines(decode_unicode=True):
         if not line or not line.startswith("data:"):
             continue
@@ -105,12 +114,53 @@ def ask(system, user_message, run_name, token=None):
             event = json.loads(line[5:].strip())
         except json.JSONDecodeError:
             continue
+        events += 1
+        if event.get("error"):
+            raise ValueError(f"A2A error: {str(event['error'])[:200]}")
         result = event.get("result") or {}
-        for part in (result.get("message") or {}).get("parts", []) or result.get("parts", []) or []:
-            if part.get("kind") == "text" and part.get("text"):
-                chunks.append(part["text"])
+        status = result.get("status") or {}
+        if status.get("state"):
+            last_state = status["state"]
+        for chunk in (texts(status.get("message")) + texts(result.get("artifact"))
+                      + texts(result.get("message")) + texts(result)):
+            candidates.append(chunk)
+        for msg in result.get("history") or []:
+            if msg.get("role") != "user":
+                candidates.extend(texts(msg))
         if isinstance(result.get("usage"), dict):
             usage = result["usage"]
 
-    raw = "".join(chunks)
-    return extract_json(raw), raw, usage
+    # A REFUSAL OR A CRASH MUST NOT LOOK LIKE SILENCE. If the task ended in a terminal non-success state,
+    # say so with the state name, even when some text did arrive.
+    if last_state in ("failed", "canceled", "rejected", "unknown"):
+        detail = (candidates[-1] if candidates else "")[:200]
+        raise ValueError(f"agent task {last_state}"+(f": {detail}" if detail else ""))
+    if not candidates:
+        raise ValueError(f"no text in {events} A2A events (last state: {last_state or 'none'})")
+
+    # Events repeat: the final snapshot echoes what the status updates already said. Concatenating would
+    # splice two JSON objects into one unparseable blob, so try whole candidates — newest first, then the
+    # longest — and return the first that parses.
+    ordered, seen = [], set()
+    for c in list(reversed(candidates)) + sorted(candidates, key=len, reverse=True):
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    last_err = None
+    for c in ordered:
+        try:
+            return extract_json(c), c, usage
+        except (ValueError, json.JSONDecodeError) as exc:
+            last_err = exc
+
+    # LAST RESORT, for a long answer streamed as fragments. Events carry `metadata.adk_partial`, so a
+    # reply larger than one chunk can arrive split across events, and then NO single candidate holds the
+    # whole object. Joining in arrival order is what the original code did; it is wrong as a FIRST move
+    # (the final snapshot repeats earlier text, and two spliced objects never parse) and right as a last
+    # one, because a fragmented answer is otherwise unrecoverable.
+    joined = "".join(candidates)
+    try:
+        return extract_json(joined), joined, usage
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"no JSON object in {len(ordered)} candidates nor in their concatenation "
+                         f"({len(joined)} chars; last error: {exc or last_err})")
