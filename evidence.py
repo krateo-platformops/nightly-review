@@ -74,9 +74,31 @@ def kagent_sessions(token, limit=50):
             return None, {"ok": False, "error": "401 from kagent /api/sessions (identity rejected)"}
         r.raise_for_status()
         payload = r.json()
-        sessions = payload if isinstance(payload, list) else payload.get("data") or payload.get("items") or []
     except Exception as exc:                                  # noqa: BLE001
         return None, {"ok": False, "error": f"/api/sessions: {exc}"}
+
+    # ZERO SESSIONS HAS THREE DIFFERENT CAUSES AND THEY ARE NOT INTERCHANGEABLE: no conversations
+    # happened in the window; this service identity is only shown its OWN sessions and it creates none;
+    # or the list is nested under a key we did not look under. The first run reported `returned: 0` for
+    # all three, so the review silently proceeded without the conversations it exists to read. Report
+    # WHICH, on the run, rather than a number that cannot be interpreted.
+    shape = "list" if isinstance(payload, list) else f"dict{sorted(payload.keys())}" if isinstance(payload, dict) else type(payload).__name__
+    sessions = payload if isinstance(payload, list) else None
+    if sessions is None and isinstance(payload, dict):
+        for key in ("sessions", "data", "items", "results"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                sessions = candidate
+                break
+            if isinstance(candidate, dict):                    # one level of nesting, e.g. {"data": {"sessions": []}}
+                for inner in ("sessions", "items", "results"):
+                    if isinstance(candidate.get(inner), list):
+                        sessions = candidate[inner]
+                        break
+            if sessions is not None:
+                break
+    if sessions is None:
+        return None, {"ok": False, "error": f"no session list found in response ({shape})", "shape": shape}
 
     lines, read = [], 0
     for s in sessions[:limit]:
@@ -84,7 +106,16 @@ def kagent_sessions(token, limit=50):
         lines.append(f"- session {sid} agent={s.get('agent_ref') or s.get('agentRef') or '?'} "
                      f"updated={s.get('updated_at') or s.get('updatedAt') or '?'}")
         read += 1
-    return _cap(redact("\n".join(lines))), {"ok": True, "queried": 1, "returned": read}
+
+    meta = {"ok": True, "queried": 1, "returned": read, "shape": shape}
+    if read == 0:
+        # A degraded run, not a clean one. The agent is told, and the run says so, so "no proposals
+        # tonight" cannot be mistaken for "nothing worth proposing in the conversations".
+        meta["empty"] = True
+        meta["note"] = ("kagent returned an empty session list for this service identity; sessions may be "
+                        "scoped per caller (A2A sessions are created under A2A_USER_<contextId>)")
+        return None, meta
+    return _cap(redact("\n".join(lines))), meta
 
 
 def kubernetes(api):
