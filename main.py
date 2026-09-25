@@ -98,7 +98,7 @@ def main():
         err = None
         # A REFUSED PROPOSAL IS RECORDED AND NEVER PUBLISHED. The allowlist gates the write credential,
         # so the check that matters is this one, here, next to the only code that can reach a repository.
-        if prop.get("refused"):
+        if not P.is_publishable(prop):
             refs.append(publish.create_proposal_cr(api, prop, run_name, phase="Refused"))
             refused += 1
             continue
