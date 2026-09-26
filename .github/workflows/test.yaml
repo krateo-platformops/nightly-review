@@ -25,6 +25,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install --no-cache-dir pytest==8.3.3 jsonschema==4.23.0
+        # THE SAME PINS THE IMAGE INSTALLS, plus pytest. They used to differ, and the gap was
+        # invisible until it wasn't: the job installed neither kubernetes nor PyYAML, so the
+        # suite could only test modules that import neither, and the test files stubbed
+        # `requests` to work around its absence. A suite that runs against a different
+        # dependency set than the image is testing something that does not ship.
+        run: pip install --no-cache-dir pytest==8.3.3 requests==2.32.3 jsonschema==4.23.0 kubernetes==31.0.0 PyYAML==6.0.2
       - name: Trust-boundary tests
         run: python -m pytest tests/ -q

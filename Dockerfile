@@ -5,7 +5,8 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
       requests==2.32.3 \
       jsonschema==4.23.0 \
-      kubernetes==31.0.0
+      kubernetes==31.0.0 \
+      PyYAML==6.0.2
 COPY *.py .
 USER 65532:65532
 # Runs once and exits. The schedule lives in the CronJob, not in a loop inside the process, so a run
