@@ -11,6 +11,8 @@ import os
 import requests
 from kubernetes.client.rest import ApiException
 
+import proposals
+
 GH_API = os.environ.get("GITHUB_API", "https://api.github.com")
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 NAMESPACE = os.environ.get("NAMESPACE", "krateo-system")
@@ -101,7 +103,27 @@ Produced by `ReviewRun/{run_name}` · tracked as `Proposal` in `{NAMESPACE}`.
 """
 
 
-def create_proposal_cr(api, proposal, run_name, pr=None, phase="Proposed", error=None):
+# THE PHASE VOCABULARY, DECLARED ONCE.
+#
+# These values used to be bare strings written in one function and matched by literal in another, a few
+# dozen lines apart. They agreed, so nothing was wrong today — but the agreement was invisible and
+# unenforced, and renaming one of them would have made `open_index` match nothing, which does not
+# raise: it silently reports every proposal as new and re-proposes the entire backlog. A contract whose
+# breach produces no error and no missing output is the kind worth spending eight lines on.
+#
+# WRITTEN_PHASES is asserted against the CRD's own enum by the test suite, because the apiserver
+# rejects an undeclared phase at WRITE time — long after the review has been done and paid for.
+PHASE_PROPOSED = "Proposed"
+PHASE_PR_OPEN = "PrOpen"
+PHASE_SUPERSEDED = "Superseded"
+PHASE_REFUSED = "Refused"
+PHASE_FAILED = "Failed"
+
+OPEN_PHASES = frozenset({None, PHASE_PROPOSED, PHASE_PR_OPEN})
+WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_REFUSED, PHASE_FAILED})
+
+
+def create_proposal_cr(api, proposal, run_name, pr=None, phase=PHASE_PROPOSED, error=None):
     obj = {
         "apiVersion": f"{GROUP}/{VERSION}", "kind": "Proposal",
         "metadata": {
@@ -131,21 +153,37 @@ def create_proposal_cr(api, proposal, run_name, pr=None, phase="Proposed", error
                                                    obj["metadata"]["name"])
     status = {"phase": phase, "conditions": []}
     if pr:
-        status |= {"phase": "PrOpen", "pullRequest": pr}
+        status |= {"phase": PHASE_PR_OPEN, "pullRequest": pr}
     if error:
-        status |= {"phase": "Failed", "error": str(error)[:500]}
+        status |= {"phase": PHASE_FAILED, "error": str(error)[:500]}
     api.patch_namespaced_custom_object_status(
         GROUP, VERSION, NAMESPACE, "proposals", created["metadata"]["name"], {"status": status})
     return created["metadata"]["name"]
 
 
-def open_fingerprints(api):
-    """Fingerprints already carried by a proposal that is still undecided. Night two supersedes rather
-    than reproposes; without this the reviewer is handed the same suggestions every morning until they
-    stop reading them."""
+def open_index(api):
+    """(by_fingerprint, by_target) over proposals that are still undecided.
+
+    Two indexes because there are two questions, and the old code could only ask one. By fingerprint
+    answers "have we said exactly this?" — a duplicate, dropped. By target answers "have we said
+    something else about this same file?" — a replacement, which supersedes. Returning only the first
+    is why every re-worded repeat looked new."""
     got = api.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals").get("items", [])
-    return {
-        (p.get("spec") or {}).get("fingerprint"): p["metadata"]["name"]
-        for p in got
-        if (p.get("status") or {}).get("phase") in (None, "Proposed", "PrOpen")
-    }
+    by_fingerprint, by_target = {}, {}
+    for p in got:
+        if (p.get("status") or {}).get("phase") not in OPEN_PHASES:
+            continue
+        spec = p.get("spec") or {}
+        fp, name = spec.get("fingerprint"), p["metadata"]["name"]
+        if not fp or not spec.get("kind"):
+            continue
+        by_fingerprint[fp] = name
+        by_target[proposals.target_key(spec)] = {"fingerprint": fp, "name": name}
+    return by_fingerprint, by_target
+
+
+def mark_superseded(api, name):
+    """The open proposal this one replaces. Status only — the spec of a superseded proposal is left
+    exactly as it was, because it is the record of what was suggested and when."""
+    api.patch_namespaced_custom_object_status(
+        GROUP, VERSION, NAMESPACE, "proposals", name, {"status": {"phase": PHASE_SUPERSEDED}})

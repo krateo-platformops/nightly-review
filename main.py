@@ -88,20 +88,28 @@ def main():
         print(f"[run] agent/validation failed: {exc}", flush=True)
         return 1
 
-    already = publish.open_fingerprints(api)
-    created, deduped, refused, refs = 0, 0, 0, []
+    by_fingerprint, by_target = publish.open_index(api)
+    created, deduped, refused, superseded, refs = 0, 0, 0, 0, []
     for prop in kept:
-        if prop["fingerprint"] in already:
+        # THREE OUTCOMES, NOT TWO. Identical to something already open is a duplicate; aimed at the
+        # same file with a different body is a replacement, and saying so is what `superseded` meant.
+        action, prior = P.classify(prop, by_fingerprint, by_target)
+        if action == "dedup":
             deduped += 1
             continue
         pr = None
         err = None
         # A REFUSED PROPOSAL IS RECORDED AND NEVER PUBLISHED. The allowlist gates the write credential,
         # so the check that matters is this one, here, next to the only code that can reach a repository.
+        # It is asked BEFORE anything is superseded: a proposal the allowlist refuses must not be able
+        # to retire a legitimately open one, which would let an injected target silence a real finding.
         if not P.is_publishable(prop):
-            refs.append(publish.create_proposal_cr(api, prop, run_name, phase="Refused"))
+            refs.append(publish.create_proposal_cr(api, prop, run_name, phase=publish.PHASE_REFUSED))
             refused += 1
             continue
+        if action == "supersede":
+            publish.mark_superseded(api, prior)
+            superseded += 1
         if not DRY_RUN:
             try:
                 pr = publish.open_pull_request(prop, run_name)
@@ -115,7 +123,7 @@ def main():
         "phase": "PartiallyCompleted" if degraded else "Completed",
         "finishedAt": _now().isoformat(),
         "proposals": {"created": created, "deduplicated": deduped, "refused": refused,
-                      "superseded": 0, "refs": refs},
+                      "superseded": superseded, "refs": refs},
         "model": {"name": usage.get("model", ""),
                   "inputTokens": usage.get("inputTokens", 0),
                   "outputTokens": usage.get("outputTokens", 0)},
@@ -129,7 +137,7 @@ def main():
                              "lastTransitionTime": _now().isoformat()}]
     _patch(api, run_name, st)
     print(f"[run] {st['phase']}: {created} proposed, {refused} refused, {deduped} deduped, "
-          f"degraded={degraded}", flush=True)
+          f"{superseded} superseded, degraded={degraded}", flush=True)
     return 0
 
 
