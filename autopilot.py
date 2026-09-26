@@ -11,6 +11,7 @@ touches a repository or the cluster is done afterwards, by code, from validated 
 import json
 import os
 import re
+import time
 import uuid
 
 import requests
@@ -18,7 +19,14 @@ import requests
 AUTOPILOT_A2A = os.environ.get("AUTOPILOT_A2A_URL", "http://krateo-autopilot.krateo-system.svc:8080/")
 AUTHN_URL = os.environ.get("AUTHN_URL", "")
 SA_TOKEN_PATH = os.environ.get("SA_TOKEN_PATH", "/var/run/secrets/krateo/authn/token")
-A2A_TIMEOUT = int(os.environ.get("A2A_TIMEOUT", "900"))   # a nightly review reads a lot; be patient
+# TWO DIFFERENT CLOCKS, AND CONFLATING THEM IS WHY A RUN COULD OVERRUN ITS WINDOW BY AN HOUR.
+# requests' `timeout` on a STREAMING response is a per-read silence timeout, not a total: as long as the
+# agent emits one event inside it, the client waits forever. The 02:00 run delegated to another agent
+# that was still calling tools 90 minutes in, and nothing here stopped reading. A2A_TIMEOUT is therefore
+# the TOTAL wall-clock budget for one ask() — what its name always implied — enforced in the read loop,
+# and A2A_READ_TIMEOUT is the separate, much shorter allowance for silence.
+A2A_TIMEOUT = int(os.environ.get("A2A_TIMEOUT", "900"))        # total budget for one ask(), seconds
+A2A_READ_TIMEOUT = int(os.environ.get("A2A_READ_TIMEOUT", "180"))  # max silence BETWEEN events, seconds
 _NS = uuid.UUID("6f1a1f4e-0b1a-4a2e-9f7c-2c1d5f0b9a31")   # stable namespace for this component
 
 
@@ -94,7 +102,9 @@ def ask(system, user_message, run_name, token=None):
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    resp = requests.post(AUTOPILOT_A2A, json=payload, headers=headers, timeout=A2A_TIMEOUT, stream=True)
+    deadline = time.monotonic() + A2A_TIMEOUT
+    resp = requests.post(AUTOPILOT_A2A, json=payload, headers=headers,
+                         timeout=(30, A2A_READ_TIMEOUT), stream=True)
     resp.raise_for_status()
 
     # WHERE THE ANSWER ACTUALLY IS. kagent's A2A executor does not send `result.message.parts`; it sends
@@ -107,7 +117,14 @@ def ask(system, user_message, run_name, token=None):
                 if p.get("kind") == "text" and p.get("text")]
 
     candidates, usage, last_state, events = [], {}, None, 0
+    overran = False
     for line in resp.iter_lines(decode_unicode=True):
+        if time.monotonic() > deadline:
+            # Stop READING rather than stop the agent: the task keeps running server-side and its
+            # session is still inspectable, but the run gets its window back and says why.
+            overran = True
+            resp.close()
+            break
         if not line or not line.startswith("data:"):
             continue
         try:
@@ -136,6 +153,9 @@ def ask(system, user_message, run_name, token=None):
         detail = (candidates[-1] if candidates else "")[:200]
         raise ValueError(f"agent task {last_state}"+(f": {detail}" if detail else ""))
     if not candidates:
+        if overran:
+            raise ValueError(f"A2A deadline exceeded after {A2A_TIMEOUT}s with no text in {events} "
+                             f"events (last state: {last_state or 'none'})")
         raise ValueError(f"no text in {events} A2A events (last state: {last_state or 'none'})")
 
     # Events repeat: the final snapshot echoes what the status updates already said. Concatenating would
@@ -162,5 +182,6 @@ def ask(system, user_message, run_name, token=None):
     try:
         return extract_json(joined), joined, usage
     except (ValueError, json.JSONDecodeError) as exc:
-        raise ValueError(f"no JSON object in {len(ordered)} candidates nor in their concatenation "
-                         f"({len(joined)} chars; last error: {exc or last_err})")
+        overrun = f"A2A deadline exceeded after {A2A_TIMEOUT}s; " if overran else ""
+        raise ValueError(f"{overrun}no JSON object in {len(ordered)} candidates nor in their "
+                         f"concatenation ({len(joined)} chars; last error: {exc or last_err})")

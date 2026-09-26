@@ -43,12 +43,27 @@ clickhouseQueries: {}
   #   FROM otel_logs WHERE Timestamp BETWEEN '{from}' AND '{to}' AND SeverityText IN ('ERROR','FATAL')
   #   GROUP BY ServiceName ORDER BY n DESC LIMIT 25
 
+# WHO DOES THE REVIEWING. A dedicated agent holding NO TOOLS — see templates/agent.yaml for why that
+# is the point rather than an economy. Set `create: false` to bring your own via config.reviewerA2aUrl.
+reviewer:
+  create: true
+  name: nightly-review-agent
+  modelConfig: gemini-flash    # must name a kagent ModelConfig in this namespace
+
 config:
   authnUrl: ""                 # enables the SA -> Krateo JWT exchange; required for kagent sessions
-  autopilotA2aUrl: http://krateo-autopilot.krateo-system.svc:8080/
+  reviewerA2aUrl: ""           # empty -> the agent this chart creates. Set it to point elsewhere.
+  autopilotA2aUrl: ""          # DEPRECATED alias for reviewerA2aUrl, honoured so existing values files
+                               # keep working. Asking an ORCHESTRATOR to review is what this release
+                               # stops doing; see templates/agent.yaml.
   kagentApiUrl: http://kagent-controller.krateo-system.svc:8083
   clickhouseUrl: ""
   evidenceMaxChars: 60000
+  # TWO CLOCKS. a2aTimeoutSeconds is the TOTAL budget for one question and bounds the run; the read
+  # timeout only bounds SILENCE between streamed events. Conflating them is how a chatty runaway task
+  # stayed unbounded: it never went quiet, so it never timed out.
+  a2aTimeoutSeconds: 900
+  a2aReadTimeoutSeconds: 180
 
 # Credentials are referenced, never inlined.
 secrets:

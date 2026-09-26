@@ -30,3 +30,56 @@ def test_the_context_id_is_stable_per_run_and_distinct_across_runs():
     never depends on the model remembering what it proposed last night."""
     assert A.context_id("rr-1") == A.context_id("rr-1")
     assert A.context_id("rr-1") != A.context_id("rr-2")
+
+
+class _Endless:
+    """A stream that never stops talking. This is the 02:00 run: the agent delegated, kept calling
+    tools, and emitted a `working` event well inside any per-read timeout — forever."""
+    def __init__(self):
+        self.closed = False
+        self.emitted = 0
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+    def iter_lines(self, decode_unicode=False):
+        while True:
+            self.emitted += 1
+            yield 'data: {"result": {"status": {"state": "working"}}}'
+
+
+def test_a_stream_that_never_ends_is_cut_off_by_the_total_budget(monkeypatch):
+    """The bug this guards: requests' timeout on a streaming response bounds SILENCE, not duration,
+    so a chatty runaway task was unbounded. ask() must return control, and say why."""
+    stream = _Endless()
+    monkeypatch.setattr(A, "requests", types.SimpleNamespace(post=lambda *a, **k: stream))
+    monkeypatch.setattr(A, "A2A_TIMEOUT", 0)
+
+    with pytest.raises(ValueError) as err:
+        A.ask("sys", "msg", "rr-endless")
+
+    assert "deadline exceeded" in str(err.value)
+    assert "0s" in str(err.value)
+    assert stream.closed, "the response must be closed, not left dangling"
+
+
+def test_the_read_timeout_is_separate_from_the_total_budget():
+    """Two clocks, two knobs. Collapsing them back into one re-opens the overrun."""
+    assert A.A2A_READ_TIMEOUT < A.A2A_TIMEOUT
+
+
+def test_a_normal_answer_is_unaffected_by_the_deadline(monkeypatch):
+    """The cutoff must not cost anything on the path that already worked."""
+    lines = ['data: {"result": {"status": {"state": "submitted"}}}',
+             'data: {"result": {"status": {"state": "working"}}}',
+             'data: {"result": {"status": {"state": "completed", "message": {"parts": '
+             '[{"kind": "text", "text": "{\\"proposals\\": []}"}]}}}}']
+    resp = types.SimpleNamespace(raise_for_status=lambda: None, close=lambda: None,
+                                 iter_lines=lambda decode_unicode=False: iter(lines))
+    monkeypatch.setattr(A, "requests", types.SimpleNamespace(post=lambda *a, **k: resp))
+
+    obj, raw, usage = A.ask("sys", "msg", "rr-ok")
+    assert obj == {"proposals": []}

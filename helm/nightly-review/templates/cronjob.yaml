@@ -34,8 +34,24 @@ spec:
                   value: {{ .Values.dryRun | quote }}
                 - name: RUN_RETENTION_DAYS
                   value: {{ .Values.retention.runDays | quote }}
+                # ORDER MATTERS, AND NOT IN THE OBVIOUS WAY. An explicit reviewerA2aUrl always wins.
+                # Otherwise a reviewer this chart CREATES beats the deprecated alias — because the
+                # existing release sets that alias to `autopilot`, and honouring it first would leave
+                # the upgrade pointing straight back at the orchestrator this release exists to stop
+                # calling: a fix that renders, deploys, and changes nothing. The alias is only consulted
+                # when no reviewer is being created, which is the one case it still means something.
                 - name: AUTOPILOT_A2A_URL
-                  value: {{ .Values.config.autopilotA2aUrl | quote }}
+                  {{- if .Values.config.reviewerA2aUrl }}
+                  value: {{ .Values.config.reviewerA2aUrl | quote }}
+                  {{- else if .Values.reviewer.create }}
+                  value: {{ printf "http://%s.%s.svc:8080/" .Values.reviewer.name .Release.Namespace | quote }}
+                  {{- else }}
+                  value: {{ required "config.reviewerA2aUrl is required when reviewer.create is false" .Values.config.autopilotA2aUrl | quote }}
+                  {{- end }}
+                - name: A2A_TIMEOUT
+                  value: {{ .Values.config.a2aTimeoutSeconds | quote }}
+                - name: A2A_READ_TIMEOUT
+                  value: {{ .Values.config.a2aReadTimeoutSeconds | quote }}
                 - name: AUTHN_URL
                   value: {{ .Values.config.authnUrl | quote }}
                 - name: KAGENT_API_URL
