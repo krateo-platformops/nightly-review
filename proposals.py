@@ -9,6 +9,8 @@ import hashlib
 import json
 import re
 
+import yaml
+
 # ---------------------------------------------------------------------------------------------
 # 1. WHERE A PROPOSAL MAY LAND
 # ---------------------------------------------------------------------------------------------
@@ -61,22 +63,85 @@ def redact(value):
 
 
 def redaction_count(before, after):
-    """How many redactions fired, so a run that scrubbed something says so in its status rather than
-    quietly cleaning up and reporting a normal night."""
-    return sum(1 for a, b in zip(json.dumps(before, sort_keys=True), json.dumps(after, sort_keys=True)) if a != b) > 0
+    """How many redactions fired, so a run that scrubbed something says so rather than quietly
+    cleaning up and reporting a normal night.
+
+    IT USED TO ZIP TWO JSON STRINGS CHARACTER BY CHARACTER, which cannot answer the question it was
+    named for. A redaction that SHORTENS the text shifts every later character, so the comparison
+    degenerates into noise; a substitution of equal length at the same offset counts zero; and the
+    whole thing was reduced to a bool by a trailing `> 0`, so one redaction and five were
+    indistinguishable. It was also never called. Walk the two structures instead and count the string
+    leaves that differ — which is exactly what "how many redactions fired" means."""
+    if isinstance(before, str):
+        return 1 if before != after else 0
+    if isinstance(before, dict) and isinstance(after, dict):
+        return sum(redaction_count(v, after.get(k)) for k, v in before.items())
+    if isinstance(before, list) and isinstance(after, list):
+        return sum(redaction_count(a, b) for a, b in zip(before, after))
+    return 0
 
 
 # ---------------------------------------------------------------------------------------------
 # 3. FINGERPRINT
 # ---------------------------------------------------------------------------------------------
+def normalise_body(content, fmt=None):
+    """What "the same change" means, independent of how the model happened to type it that night.
+
+    The old normalisation dropped blank lines and trailing spaces and stopped there, so a reworded
+    comment or two YAML keys in the other order produced a brand-new fingerprint — and therefore a
+    second pull request for a suggestion already open. The docstring below feared exactly that
+    outcome; this is what prevents it. YAML is compared as PARSED DATA with its mappings sorted, so
+    key order and comments cannot affect identity. Anything that is not a YAML mapping or sequence
+    falls through to the text path: comment lines and blank lines dropped, internal whitespace runs
+    collapsed."""
+    if fmt == "yaml":
+        try:
+            data = yaml.safe_load(content)
+        except yaml.YAMLError:
+            data = None
+        if isinstance(data, (dict, list)):
+            return yaml.safe_dump(data, sort_keys=True, default_flow_style=False).strip()
+    lines = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lines.append(re.sub(r"\s+", " ", stripped))
+    return "\n".join(lines)
+
+
+def target_key(proposal):
+    """What a proposal is ABOUT, with its body left out: one file, one kind of change. Two proposals
+    sharing this but not their fingerprint are successive opinions on the same question, which is the
+    distinction `superseded` was always meant to record."""
+    t = proposal.get("target", {})
+    return "\x1f".join([proposal["kind"], t.get("repo", ""), t.get("path", "")])
+
+
 def fingerprint(proposal):
     """Stable identity for "the same suggestion", so night two supersedes night one instead of
     reproposing it. Deliberately excludes rationale and confidence — the model will word its reasoning
     differently every night, and a fingerprint that changed with the prose would defeat itself."""
     t = proposal.get("target", {})
-    body = "\n".join(line.rstrip() for line in proposal["change"]["content"].splitlines() if line.strip())
+    change = proposal.get("change", {})
+    body = normalise_body(change.get("content", ""), change.get("format"))
     key = "\x1f".join([proposal["kind"], t.get("repo", ""), t.get("path", ""), body])
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
+def classify(proposal, by_fingerprint, by_target):
+    """(action, prior name). THREE OUTCOMES, WHERE THE CODE USED TO SEE TWO — and the missing third is
+    why `superseded` was reported as a hardcoded 0 every night while its own docstring described a
+    mechanism that did not exist. Identical to something already open is a duplicate and is dropped.
+    Aimed at the same file with a DIFFERENT body is a replacement: the open one is stale and is marked
+    Superseded, rather than left beside its own successor for a human to reconcile."""
+    fp = fingerprint(proposal)
+    if fp in by_fingerprint:
+        return "dedup", by_fingerprint[fp]
+    prior = by_target.get(target_key(proposal))
+    if prior and prior.get("fingerprint") != fp:
+        return "supersede", prior["name"]
+    return "new", None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -119,8 +184,9 @@ def validate_batch(payload, allowlist, schema_check, item_check=None):
                 notes.append(f"DROPPED proposal[{i}]: does not match the contract ({str(exc)[:160]})")
                 continue
         clean = redact(raw)
-        if clean != raw:
-            notes.append(f"proposal[{i}] contained a secret-shaped string; redacted before storage")
+        fired = redaction_count(raw, clean)
+        if fired:
+            notes.append(f"proposal[{i}] contained {fired} secret-shaped string(s); redacted before storage")
 
         repo = clean["target"]["repo"]
         permitted = allowlist.get(clean["kind"], set())

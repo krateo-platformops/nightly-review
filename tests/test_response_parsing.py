@@ -1,7 +1,12 @@
 """Parsing the agent's reply. A response we had to guess at is a response we should refuse."""
 import sys, os, types
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.modules.setdefault("requests", types.ModuleType("requests"))
+import importlib.util
+# Stub ONLY when requests is genuinely absent. An unconditional stub shadowed the real
+# package, and anything importing the kubernetes client (which imports requests.utils) then
+# failed to collect — so a test file could break its neighbours purely by import order.
+if importlib.util.find_spec("requests") is None:
+    sys.modules.setdefault("requests", types.ModuleType("requests"))
 
 import pytest
 import autopilot as A
