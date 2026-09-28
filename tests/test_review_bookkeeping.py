@@ -106,3 +106,14 @@ def test_every_phase_the_publisher_writes_is_declared_in_the_crd_enum():
     m = re.search(r"phase:\s*\n\s*type: string\s*\n\s*enum: \[([^\]]+)\]", crd)
     declared = set(m.group(1).replace(" ", "").split(","))
     assert publish.WRITTEN_PHASES <= declared, publish.WRITTEN_PHASES - declared
+
+
+# --- a refused response must leave evidence of itself ------------------------------------------
+
+def test_a_secret_in_an_unusable_response_is_redacted_before_it_is_stored():
+    """The diagnostic excerpt is model output over a corpus that has held credentials. Storing it raw
+    on a CR, and printing it to a pod log, would be a worse bug than the failure it explains."""
+    raw = 'I suggest using token ghp_' + 'a' * 30 + ' and eyJ' + 'b' * 40
+    out = P.redact(raw)
+    assert "ghp_" not in out and "eyJ" not in out
+    assert "<REDACTED-GITHUB-PAT>" in out and "<REDACTED-JWT>" in out

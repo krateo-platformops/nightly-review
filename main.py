@@ -73,6 +73,10 @@ def main():
         print("[run] no evidence; failed", flush=True)
         return 1
 
+    # `raw` is bound OUTSIDE the try on purpose. When validation refuses a response, the one thing
+    # needed to fix it is the response, and until now the run recorded only that it was unusable — a
+    # night failed with "no `proposals` array" and left nothing to say WHAT had arrived instead.
+    raw = None
     try:
         payload, raw, usage = autopilot.ask(
             prompt.SYSTEM, prompt.build_user_message(window, blocks), run_name, token)
@@ -84,8 +88,17 @@ def main():
         )
     except Exception as exc:                                  # noqa: BLE001
         st |= {"phase": "Failed", "finishedAt": _now().isoformat(), "error": f"{type(exc).__name__}: {exc}"[:500]}
+        # REDACTED BEFORE IT IS STORED OR PRINTED, through the same path a proposal takes. This text is
+        # model output summarising a corpus that has held credentials, and a diagnostic that leaks one
+        # into a CR and a pod log is a worse bug than the failure it explains.
+        excerpt = P.redact(raw)[:1800] if isinstance(raw, str) and raw else ""
+        if excerpt:
+            st["conditions"] = [{"type": "AgentResponse", "status": "False", "reason": "Unusable",
+                                 "message": excerpt, "lastTransitionTime": _now().isoformat()}]
         _patch(api, run_name, st)
         print(f"[run] agent/validation failed: {exc}", flush=True)
+        if excerpt:
+            print(f"[run] response began: {excerpt[:600]}", flush=True)
         return 1
 
     by_fingerprint, by_target = publish.open_index(api)
