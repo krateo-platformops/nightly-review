@@ -123,7 +123,9 @@ def _pr_body(proposal, run_name, queries_run=None):
     """The body leads with the EVIDENCE, not the suggestion.
 
     A reviewer's first question is "why do you think so", and a proposal that answers it last gets
-    approved on tone. Each query is included verbatim so the claim can be re-run and disagreed with."""
+    approved on tone. The queries THIS SERVICE ISSUED are rendered below, verbatim, so the claim can be
+    re-run and disagreed with — the model is no longer asked to restate them, because when it was it
+    supplied a reconstruction that matched nothing that ran."""
     ev = "\n".join(
         f"- **{e['source']}**"
         + (f" ({e['observedCount']} observed)" if e.get("observedCount") is not None else "")
