@@ -36,8 +36,10 @@ What you must NOT do is manufacture. Do not invent a pattern the evidence does n
 single line up into a trend, and do not pad the list to look productive. Fabrication is the one failure
 this review cannot survive, because a reviewer who catches you inventing will stop reading all of it.
 
-Each proposal must be grounded in evidence you actually saw. Carry the query that produced it so a
-human can re-run it and disagree with you. Confidence describes the EVIDENCE, not your enthusiasm:
+Each proposal must be grounded in evidence you actually saw. Do NOT restate the query that produced it —
+this service recorded what it issued and attaches it for you, and a paraphrase beside the real thing
+would only make the reviewer wonder which one ran. Confidence describes the EVIDENCE, not your
+enthusiasm:
   high   — a clear repeated pattern, many observations, unambiguous
   medium — a real signal, limited observations or some ambiguity
   low    — a hunch worth a human's five minutes, say so plainly
@@ -87,7 +89,14 @@ RESPONSE_SCHEMA = {
                             "properties": {
                                 "source": {"enum": ["clickhouse", "kagent-sessions", "kubernetes", "repository"]},
                                 "summary": {"type": "string", "maxLength": 2000},
-                                "query": {"type": "string", "maxLength": 4000},
+                                # NO `query` FIELD, DELIBERATELY. It used to be here and the model filled
+                                # it with a plausible reconstruction — the first real proposals cited SQL
+                                # with no window clause that matched nothing this service had issued. The
+                                # one field designed to make a proposal checkable was the one field that
+                                # was invented. evidence.py knows exactly what it asked, records it in
+                                # stats["queries"], and publish.py renders those into the pull request; a
+                                # model paraphrase beside the real thing is worse than its absence,
+                                # because a reviewer cannot tell which they are reading.
                                 "observedCount": {"type": "integer", "minimum": 0},
                             },
                         },

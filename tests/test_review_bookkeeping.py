@@ -316,3 +316,15 @@ def test_a_naive_window_bound_is_not_shifted_by_the_machines_timezone():
 def test_an_offset_window_bound_is_converted_to_utc():
     import evidence as E
     assert E._ch_time("2026-09-27T16:17:43+02:00") == "2026-09-27 14:17:43"
+
+
+def test_the_contract_no_longer_asks_the_model_for_a_query():
+    """The field existed to make a proposal checkable and was the one field the model invented — the
+    first real proposals cited SQL with no window clause that matched nothing this service ran. The
+    service records what it issued; a paraphrase beside it is worse than its absence."""
+    import prompt as PR
+    ev = PR.ITEM_SCHEMA["properties"]["evidence"]["items"]
+    assert "query" not in ev["properties"], "the model can still author a query"
+    assert ev["additionalProperties"] is False, "without this the model could add it back anyway"
+    msg = PR.build_user_message({"from": "a", "to": "b"}, {"clickhouse": "rows"})
+    assert "Carry the query that produced it" not in msg
