@@ -42,11 +42,21 @@ def publish_version():
     with a name attached."""
     crd = client.ApiextensionsV1Api().read_custom_resource_definition(
         f"{PUBLISH_PLURAL}.{PUBLISH_GROUP}")
+    # SERVED, NEVER STORAGE. On 057 this CRD carries two versions: the composition version that is
+    # actually served (v1-8-46 and so on), and `vacuum` — which is marked storage:true and served:FALSE,
+    # and carries no spec schema at all. Preferring the storage version, which is the reflex, returns
+    # `vacuum` and every claim then fails with "no matches for kind", because the apiserver does not
+    # serve it. Measured on the cluster rather than reasoned about: this code picked `vacuum` first.
     served = [v.name for v in crd.spec.versions if v.served]
-    storage = [v.name for v in crd.spec.versions if v.storage]
     if not served:
         raise RuntimeError(f"{PUBLISH_PLURAL}.{PUBLISH_GROUP} serves no version")
-    return (storage or served)[0]
+    if len(served) > 1:
+        # Several served versions is a portal mid-migration. Take the newest by the v<major>-<minor>-
+        # <patch> ordering the composition versions use, rather than whichever the API happened to list.
+        def key(name):
+            return [int(x) for x in name.lstrip("v").split("-") if x.isdigit()]
+        served = sorted(served, key=key, reverse=True)
+    return served[0]
 
 
 def create_publish_claim(api, proposal, run_name, version=None):

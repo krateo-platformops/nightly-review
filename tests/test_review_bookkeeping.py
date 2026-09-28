@@ -191,3 +191,27 @@ def test_publish_holds_no_github_surface_any_more():
     src = pathlib.Path("publish.py").read_text()
     for gone in ("import requests", "GITHUB_TOKEN", "api.github.com", "base64"):
         assert gone not in src, f"{gone!r} still reachable from publish.py"
+
+
+def test_the_publish_version_is_a_served_one_never_the_storage_version():
+    """On 057 the BuilderPublish CRD carries `vacuum` as storage:true / served:false, with no spec
+    schema. Preferring storage — the reflex — returns a version the apiserver will not serve, and every
+    claim fails with "no matches for kind". This asserts the instrument, because the first version of
+    this function picked vacuum."""
+    import types as _t
+    def crd(vs):
+        return _t.SimpleNamespace(spec=_t.SimpleNamespace(versions=[
+            _t.SimpleNamespace(name=n, served=s, storage=st) for n, s, st in vs]))
+    import kubernetes.client as _kc
+    class _FakeExt:
+        def __init__(self, vs): self._vs = vs
+        def read_custom_resource_definition(self, name): return crd(self._vs)
+    orig = _kc.ApiextensionsV1Api
+    try:
+        _kc.ApiextensionsV1Api = lambda *a, **k: _FakeExt([("vacuum", False, True), ("v1-8-46", True, False)])
+        assert publish.publish_version() == "v1-8-46"
+        _kc.ApiextensionsV1Api = lambda *a, **k: _FakeExt(
+            [("vacuum", False, True), ("v1-8-44", True, False), ("v1-8-46", True, False)])
+        assert publish.publish_version() == "v1-8-46", "newest served version, not list order"
+    finally:
+        _kc.ApiextensionsV1Api = orig
