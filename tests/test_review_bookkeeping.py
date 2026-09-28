@@ -117,3 +117,24 @@ def test_a_secret_in_an_unusable_response_is_redacted_before_it_is_stored():
     out = P.redact(raw)
     assert "ghp_" not in out and "eyJ" not in out
     assert "<REDACTED-GITHUB-PAT>" in out and "<REDACTED-JWT>" in out
+
+
+# --- the contract must actually reach the model ------------------------------------------------
+
+def test_the_response_contract_is_sent_to_the_model_not_merely_named():
+    """The prompt asked for "a JSON object matching the response contract" and never sent the contract.
+    The model invented id/type/description/priority, and per-item validation dropped five real findings
+    on 2026-09-28. Naming a schema is not the same as showing it."""
+    import prompt as PR
+    msg = PR.build_user_message({"from": "2026-01-01T00:00:00Z", "to": "2026-01-02T00:00:00Z"},
+                                {"clickhouse": "some rows"})
+    for field in PR.ITEM_SCHEMA["required"]:
+        assert field in msg, f"contract field {field!r} never reaches the model"
+    assert "additionalProperties" in msg, "the rule that discarded five findings is not stated"
+
+
+def test_the_contract_in_the_prompt_is_the_one_used_for_validation():
+    """Rendered from the same object, so it cannot drift from what validate_batch enforces."""
+    import json as _json, prompt as PR
+    msg = PR.build_user_message({"from": "a", "to": "b"}, {"x": "y"})
+    assert _json.dumps(PR.RESPONSE_SCHEMA, indent=1, sort_keys=True) in msg
