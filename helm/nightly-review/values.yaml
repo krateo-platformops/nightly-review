@@ -60,7 +60,10 @@ config:
 
 # Credentials are referenced, never inlined.
 secrets:
-  github: { name: "", key: token }          # PR creation; needs contents+pull-requests write
+  # NO GITHUB TOKEN. Publishing goes through the platform's own chain (Repository -> Repo ->
+  # LocalResource -> PullRequest), so the credential that reaches a repository is git-provider's,
+  # configured once at install level and shared with portal-builder and blueprint-builder. This service
+  # only asks, by creating a BuilderPublish claim.
   clickhouse: { name: "", userKey: username, passwordKey: password }
 
 resources:

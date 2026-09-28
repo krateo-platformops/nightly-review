@@ -92,18 +92,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "github": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "key": {
-              "type": "string"
-            }
-          }
-        },
         "clickhouse": {
           "type": "object",
           "additionalProperties": false,

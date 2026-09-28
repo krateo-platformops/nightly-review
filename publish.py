@@ -1,68 +1,122 @@
-"""Write the outcome: a Proposal object per suggestion, and a pull request carrying the change.
+"""Write the outcome: a Proposal object per suggestion, and a BuilderPublish claim carrying the change.
 
-THE SERVICE WRITES; THE AGENT NEVER DOES. Everything here runs on validated, redacted data and a
-credential the model cannot reach. That split is the whole safety argument: a prompt injection can at
-worst produce a malformed proposal, which is dropped upstream of this file.
+THIS SERVICE NO LONGER TALKS TO GITHUB, AND NO LONGER HOLDS A TOKEN. It used to branch, PUT a file and
+open a pull request over the REST API with its own credential. Everything below now renders a claim to
+the platform's own publish chain — Repository -> Repo -> LocalResource per file -> PullRequest — which
+portal-builder and blueprint-builder already use. The credential is git-provider's, the ordering gate
+that stops GitHub's 422 ("no commits between main and the branch") is the chain's, and PullRequest is
+level-based so a re-render cannot open a second one.
+
+THE AGENT STILL NEVER WRITES. That split is unchanged and is still the whole safety argument; what
+changed is that the service does not hold a write credential either.
 """
-import base64
 import datetime as dt
 import os
 
-import requests
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 import proposals
 
-GH_API = os.environ.get("GITHUB_API", "https://api.github.com")
-GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 NAMESPACE = os.environ.get("NAMESPACE", "krateo-system")
 GROUP, VERSION = "review.krateo.io", "v1alpha1"
+
+# The publish chain's own group. The KIND is version-pinned in the served CRD (v1-8-46 and so on), and
+# that version moves with every portal release — so it is DISCOVERED at run time rather than compiled
+# in. A hardcoded version would publish nothing the morning after a portal bump, and would do it
+# quietly, because the apiserver simply reports the kind as unknown.
+PUBLISH_GROUP = "composition.krateo.io"
+PUBLISH_PLURAL = "builderpublishes"
+PUBLISH_BUILDER = os.environ.get("PUBLISH_BUILDER", "review")
 
 
 def _now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def open_pull_request(proposal, run_name):
-    """Branch, commit one file, open a PR. Returns {url, number, state} or raises."""
-    repo = proposal["target"]["repo"]
+def publish_version():
+    """The served version of the BuilderPublish kind, read from the CRD rather than assumed.
+
+    The kind is version-pinned by the portal release that shipped it, so this changes under us. Reading
+    it costs one GET and turns "publishing silently stopped after a portal roll" into a normal failure
+    with a name attached."""
+    crd = client.ApiextensionsV1Api().read_custom_resource_definition(
+        f"{PUBLISH_PLURAL}.{PUBLISH_GROUP}")
+    # SERVED, NEVER STORAGE. On 057 this CRD carries two versions: the composition version that is
+    # actually served (v1-8-46 and so on), and `vacuum` — which is marked storage:true and served:FALSE,
+    # and carries no spec schema at all. Preferring the storage version, which is the reflex, returns
+    # `vacuum` and every claim then fails with "no matches for kind", because the apiserver does not
+    # serve it. Measured on the cluster rather than reasoned about: this code picked `vacuum` first.
+    served = [v.name for v in crd.spec.versions if v.served]
+    if not served:
+        raise RuntimeError(f"{PUBLISH_PLURAL}.{PUBLISH_GROUP} serves no version")
+    if len(served) > 1:
+        # Several served versions is a portal mid-migration. Take the newest by the v<major>-<minor>-
+        # <patch> ordering the composition versions use, rather than whichever the API happened to list.
+        def key(name):
+            return [int(x) for x in name.lstrip("v").split("-") if x.isdigit()]
+        served = sorted(served, key=key, reverse=True)
+    return served[0]
+
+
+def create_publish_claim(api, proposal, run_name, version=None):
+    """Render one proposal as a BuilderPublish claim. Returns {name, apiVersion, branch}.
+
+    IT IS `builder: review`, AND THAT MATTERS MORE THAN IT LOOKS. The value sets krateo.io/builder on
+    every CR the chain renders and is interpolated into each commit message, and the portal's lists
+    select on it. Publishing as `blueprint` would make an overnight machine suggestion indistinguishable
+    from a blueprint a person authored, in their lists and in the git history. The enum gained `review`
+    for exactly this (portal 1.8.46).
+
+    REPOSITORY CREATION IS OFF. A review proposal targets a repository that already exists; the chain's
+    default is to create one, which for a typo'd target would mean conjuring a repository rather than
+    failing. `target.base` is left at the chain's default rather than discovered, because discovering a
+    default branch is a GitHub call and not holding a GitHub credential is the point of this change."""
+    org, _, repo = proposal["target"]["repo"].partition("/")
+    if not org or not repo:
+        raise ValueError(f"target.repo {proposal['target']['repo']!r} is not owner/name")
+    fp = proposal["fingerprint"][:12]
+    name = f"review-{fp}"
+    branch = f"review/{proposal['kind'].lower()}-{fp}"
     path = proposal["target"].get("path") or f"proposals/{proposal['fingerprint']}.yaml"
-    branch = f"review/{proposal['kind'].lower()}-{proposal['fingerprint'][:12]}"
-    h = {"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json"}
+    version = version or publish_version()
 
-    default = requests.get(f"{GH_API}/repos/{repo}", headers=h, timeout=30).json()["default_branch"]
-    base = requests.get(f"{GH_API}/repos/{repo}/git/refs/heads/{default}", headers=h, timeout=30).json()
-    sha = base["object"]["sha"]
-
-    r = requests.post(f"{GH_API}/repos/{repo}/git/refs", headers=h, timeout=30,
-                      json={"ref": f"refs/heads/{branch}", "sha": sha})
-    if r.status_code not in (201, 422):        # 422 = branch exists from an earlier attempt; reuse it
-        r.raise_for_status()
-
-    existing = requests.get(f"{GH_API}/repos/{repo}/contents/{path}",
-                            headers=h, params={"ref": branch}, timeout=30)
     body = {
-        "message": f"review: {proposal['title']}",
-        "content": base64.b64encode(proposal["change"]["content"].encode()).decode(),
-        "branch": branch,
+        "apiVersion": f"{PUBLISH_GROUP}/{version}",
+        "kind": "BuilderPublish",
+        "metadata": {
+            "name": name,
+            "namespace": NAMESPACE,
+            "labels": {
+                "review.krateo.io/run": run_name,
+                "review.krateo.io/fingerprint": proposal["fingerprint"][:63],
+            },
+        },
+        "spec": {
+            "name": name,
+            "branch": branch,
+            "builder": PUBLISH_BUILDER,
+            "target": {"namespace": org, "repo": repo},
+            "repository": {"create": False},
+            "files": [{"path": path, "content": proposal["change"]["content"]}],
+            "pullRequest": {
+                "create": True,
+                "title": f"review: {proposal['title']}",
+                "body": _pr_body(proposal, run_name),
+            },
+        },
     }
-    if existing.status_code == 200:
-        body["sha"] = existing.json()["sha"]
-    requests.put(f"{GH_API}/repos/{repo}/contents/{path}", headers=h, json=body, timeout=60).raise_for_status()
-
-    pr = requests.post(f"{GH_API}/repos/{repo}/pulls", headers=h, timeout=30, json={
-        "title": f"review: {proposal['title']}",
-        "head": branch, "base": default,
-        "body": _pr_body(proposal, run_name),
-    })
-    if pr.status_code == 422:                  # a PR for this branch already exists
-        found = requests.get(f"{GH_API}/repos/{repo}/pulls", headers=h,
-                             params={"head": f"{repo.split('/')[0]}:{branch}", "state": "open"},
-                             timeout=30).json()
-        if found:
-            return {"url": found[0]["html_url"], "number": found[0]["number"], "state": "open"}
-    pr.raise_for_status()
-    return {"url": pr.json()["html_url"], "number": pr.json()["number"], "state": "open"}
+    try:
+        api.create_namespaced_custom_object(PUBLISH_GROUP, version, NAMESPACE, PUBLISH_PLURAL, body)
+    except ApiException as exc:
+        # ALREADY THERE IS NORMAL. The name derives from the fingerprint, so the same suggestion on a
+        # later night lands on the same claim. The chain is level-based; re-asserting the spec is how it
+        # is meant to be driven, and it will not open a second pull request.
+        if exc.status != 409:
+            raise
+        api.patch_namespaced_custom_object(PUBLISH_GROUP, version, NAMESPACE, PUBLISH_PLURAL, name,
+                                           {"spec": body["spec"]})
+    return {"name": name, "apiVersion": body["apiVersion"], "branch": branch}
 
 
 def _pr_body(proposal, run_name):
@@ -122,7 +176,7 @@ OPEN_PHASES = frozenset({None, PHASE_PROPOSED, PHASE_PR_OPEN})
 WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_FAILED})
 
 
-def create_proposal_cr(api, proposal, run_name, pr=None, phase=PHASE_PROPOSED, error=None):
+def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED, error=None):
     obj = {
         "apiVersion": f"{GROUP}/{VERSION}", "kind": "Proposal",
         "metadata": {
@@ -132,7 +186,13 @@ def create_proposal_cr(api, proposal, run_name, pr=None, phase=PHASE_PROPOSED, e
                 "review.krateo.io/kind": proposal["kind"],
                 "review.krateo.io/run": run_name,
                 "review.krateo.io/confidence": proposal["confidence"],
-            },
+            }
+            # THE CLAIM IS RECORDED AS A LABEL, NOT A STATUS FIELD, and deliberately so: the Proposal
+            # CRD is structural with no preserve-unknown-fields, so an undeclared status key is pruned
+            # SILENTLY — the object would come back looking as though nothing had been published. A
+            # label needs no schema change and is selectable, which is what a later reconciler will use
+            # to find the claim whose pull request it must read back.
+            | ({"review.krateo.io/publish-claim": claim["name"]} if claim else {}),
         },
         "spec": {k: proposal[k] for k in
                  ("kind", "title", "rationale", "evidence", "confidence", "target", "change", "fingerprint")}
@@ -150,9 +210,11 @@ def create_proposal_cr(api, proposal, run_name, pr=None, phase=PHASE_PROPOSED, e
                                            {"spec": obj["spec"]})
         created = api.get_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals",
                                                    obj["metadata"]["name"])
+    # PUBLISHING IS ASYNCHRONOUS NOW, so this run cannot know the pull request. It created a claim; the
+    # chain opens the PR minutes later, on its own reconcile. Writing PrOpen here would be a guess, and
+    # writing status.pullRequest would be a fabrication — both stay for the reconciler that reads the
+    # real outcome back. Proposed is the honest phase for "handed to the chain, not yet decided".
     status = {"phase": phase, "conditions": []}
-    if pr:
-        status |= {"phase": PHASE_PR_OPEN, "pullRequest": pr}
     if error:
         status |= {"phase": PHASE_FAILED, "error": str(error)[:500]}
     api.patch_namespaced_custom_object_status(

@@ -63,12 +63,7 @@ spec:
                 # A JSON blob so the queries stay reviewable as data.
                 - name: CLICKHOUSE_QUERIES
                   value: {{ .Values.clickhouseQueries | toJson | quote }}
-                {{- with .Values.secrets.github.name }}
-                - name: GITHUB_TOKEN
-                  valueFrom:
-                    secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.github.key }} }
-                {{- end }}
-                {{- with .Values.secrets.clickhouse.name }}
+                                {{- with .Values.secrets.clickhouse.name }}
                 - name: CLICKHOUSE_USER
                   valueFrom:
                     secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.clickhouse.userKey }} }
