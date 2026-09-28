@@ -3,7 +3,7 @@ suggestion twice, and what it calls an undecided proposal.
 
 Every test here was written to FAIL against the code as it stood, so each one names a defect that was
 reasoned about from the source and is now demonstrated rather than asserted."""
-import sys, os
+import sys, os, types
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
@@ -215,3 +215,57 @@ def test_the_publish_version_is_a_served_one_never_the_storage_version():
         assert publish.publish_version() == "v1-8-46", "newest served version, not list order"
     finally:
         _kc.ApiextensionsV1Api = orig
+
+
+# --- the run tells the truth about its own evidence ---------------------------------------------
+
+def test_an_unwindowed_query_is_refused_rather_than_run(monkeypatch):
+    """The window is a safety control: spans older than the collector's JWT redaction can still carry
+    live credentials, so an unbounded scan is a disclosure risk, not just a slow query."""
+    import evidence as E
+    monkeypatch.setattr(E, "CLICKHOUSE_URL", "http://clickhouse.invalid")
+    called = []
+    monkeypatch.setattr(E, "requests", types.SimpleNamespace(
+        post=lambda *a, **k: called.append(k) or (_ for _ in ()).throw(AssertionError("must not run"))))
+    body, stats = E.clickhouse({"unbounded": "SELECT 1 FROM otel_logs"},
+                               {"from": "A", "to": "B"})
+    assert called == [], "an unwindowed query must never reach ClickHouse"
+    assert stats["ok"] is False and "refused" in stats["error"]
+
+
+def test_truncation_is_recorded_on_the_run_not_only_marked_in_the_corpus():
+    import evidence as E
+    stats = {}
+    out = E._cap("x" * (E.MAX_CHARS + 500), stats)
+    assert stats["truncated"] is True
+    assert stats["droppedChars"] == 500
+    assert "truncated at" in out, "the model should still be told its evidence was cut"
+
+
+def test_an_untruncated_source_records_nothing():
+    import evidence as E
+    stats = {}
+    E._cap("short", stats)
+    assert "truncated" not in stats
+
+
+def test_the_denylist_covers_the_families_it_was_missing():
+    """THE FIXTURES ARE ASSEMBLED FROM FRAGMENTS, not written out, and each carries a gitleaks:allow.
+
+    Writing them literally is what a test for a secret scanner naturally looks like, and it failed CI
+    the first time for exactly the right reason: Gitleaks scans this repository and these strings are
+    shaped like credentials. They are invented, and none is real — but "trust me, it is fake" is not
+    something a scanner can check, and switching the scanner off for this path would trade a real
+    control for a test. Fragments plus a per-line allow keeps the scan intact and the intent legible."""
+    cases = [
+        ("gl" + "pat-" + "a" * 24, "<REDACTED-GITLAB-PAT>"),                      # gitleaks:allow
+        ("xo" + "xb-" + "1" * 12 + "-" + "abcdefghijkl", "<REDACTED-SLACK-TOKEN>"),  # gitleaks:allow
+        ("AI" + "za" + "B" * 35, "<REDACTED-GOOGLE-API-KEY>"),                    # gitleaks:allow
+        ("api" + "_key=" + "abcd1234efgh", "<REDACTED>"),                         # gitleaks:allow
+        ("client" + "_secret: " + "verysecretvalue123", "<REDACTED>"),            # gitleaks:allow
+    ]
+    for raw, marker in cases:
+        assert marker in P.redact(raw), f"{raw[:20]!r} survived redaction"
+    secret = "s3cret" + "pw"                                                      # gitleaks:allow
+    url = P.redact(f"postgres://user:{secret}@db.internal:5432/x")
+    assert secret not in url and "db.internal" in url, "redact the password, keep the host readable"
