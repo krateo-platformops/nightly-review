@@ -100,6 +100,16 @@ def main():
             print(f"[run] response began: {excerpt[:600]}", flush=True)
         return 1
 
+    # Resolved ONCE per run rather than per proposal: the BuilderPublish kind is version-pinned by the
+    # portal release that shipped it, and a run that published ten proposals should not make ten
+    # identical discovery calls — nor straddle a version change halfway through a night.
+    publish_version = None
+    if not DRY_RUN:
+        try:
+            publish_version = publish.publish_version()
+        except Exception as exc:                              # noqa: BLE001
+            print(f"[publish] cannot resolve the BuilderPublish version: {exc}", flush=True)
+
     by_fingerprint, by_target = publish.open_index(api)
     created, deduped, superseded, refs = 0, 0, 0, []
     for prop in kept:
@@ -109,18 +119,18 @@ def main():
         if action == "dedup":
             deduped += 1
             continue
-        pr = None
+        claim = None
         err = None
         if action == "supersede":
             publish.mark_superseded(api, prior)
             superseded += 1
         if not DRY_RUN:
             try:
-                pr = publish.open_pull_request(prop, run_name)
+                claim = publish.create_publish_claim(api, prop, run_name, version=publish_version)
             except Exception as exc:                          # noqa: BLE001
                 err = exc
-                print(f"[pr] failed for {prop['title']!r}: {exc}", flush=True)
-        refs.append(publish.create_proposal_cr(api, prop, run_name, pr=pr, error=err))
+                print(f"[publish] claim failed for {prop['title']!r}: {exc}", flush=True)
+        refs.append(publish.create_proposal_cr(api, prop, run_name, claim=claim, error=err))
         created += 1
 
     st |= {

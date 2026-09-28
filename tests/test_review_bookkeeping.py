@@ -138,3 +138,56 @@ def test_the_contract_in_the_prompt_is_the_one_used_for_validation():
     import json as _json, prompt as PR
     msg = PR.build_user_message({"from": "a", "to": "b"}, {"x": "y"})
     assert _json.dumps(PR.RESPONSE_SCHEMA, indent=1, sort_keys=True) in msg
+
+
+# --- publishing through the platform's own chain -----------------------------------------------
+
+class _FakeApi:
+    def __init__(self): self.created = []
+    def create_namespaced_custom_object(self, group, version, ns, plural, body):
+        self.created.append((group, version, ns, plural, body)); return body
+
+
+def test_a_proposal_becomes_a_builderpublish_claim_not_a_github_call():
+    """Publishing is a claim to the chain portal-builder and blueprint-builder already use. The service
+    holds no GitHub credential any more; git-provider does."""
+    api = _FakeApi()
+    prop = _prop("replicas: 3\n", repo="krateo-platformops/monitoring", path="alerts/x.yaml")
+    prop["fingerprint"] = P.fingerprint(prop)
+    prop["title"] = "Alert on x"
+    out = publish.create_publish_claim(api, prop, "rr-1", version="v1-8-46")
+
+    (group, version, ns, plural, body) = api.created[0]
+    assert (group, plural, version) == ("composition.krateo.io", "builderpublishes", "v1-8-46")
+    spec = body["spec"]
+    assert spec["builder"] == "review", "a review proposal must not be labelled as a person's blueprint"
+    assert spec["repository"]["create"] is False, "a proposal targets a repo that already exists"
+    assert spec["target"] == {"namespace": "krateo-platformops", "repo": "monitoring"}
+    assert spec["files"] == [{"path": "alerts/x.yaml", "content": "replicas: 3\n"}]
+    assert spec["pullRequest"]["create"] is True
+    assert out["name"] == spec["name"] == f"review-{prop['fingerprint'][:12]}"
+
+
+def test_the_claim_name_is_stable_so_the_same_suggestion_reasserts_one_claim():
+    """Level-based chain: night two re-asserts the same claim rather than opening a second PR."""
+    api = _FakeApi()
+    prop = _prop("replicas: 3\n"); prop["fingerprint"] = P.fingerprint(prop); prop["title"] = "t"
+    a = publish.create_publish_claim(api, prop, "rr-1", version="v1-8-46")
+    b = publish.create_publish_claim(api, prop, "rr-2", version="v1-8-46")
+    assert a["name"] == b["name"]
+
+
+def test_a_malformed_target_repo_fails_loudly_rather_than_publishing_somewhere_odd():
+    api = _FakeApi()
+    prop = _prop("x: 1\n", repo="not-an-owner-slash-name")
+    prop["fingerprint"] = P.fingerprint(prop); prop["title"] = "t"
+    with pytest.raises(ValueError):
+        publish.create_publish_claim(api, prop, "rr-1", version="v1-8-46")
+
+
+def test_publish_holds_no_github_surface_any_more():
+    """Structural, because the point of the change is the absence of a credential path."""
+    import pathlib
+    src = pathlib.Path("publish.py").read_text()
+    for gone in ("import requests", "GITHUB_TOKEN", "api.github.com", "base64"):
+        assert gone not in src, f"{gone!r} still reachable from publish.py"
