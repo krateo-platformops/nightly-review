@@ -119,10 +119,10 @@ spec:
                     refused:
                       type: integer
                       description: >-
-                        Recorded as Proposal objects in phase Refused and never published, because the
-                        target was outside the allowlist for that kind. Counted separately from created so
-                        "nothing was proposed tonight" and "everything was refused" cannot be confused —
-                        with an empty allowlist the second is the expected outcome.
+                        HISTORICAL, no longer written. It counted proposals recorded in phase Refused
+                        because their target was outside the per-kind allowlist. That allowlist has been
+                        removed — every proposal now becomes a pull request a human reads — so the
+                        counter stays only so the runs that recorded one remain readable.
                     refs:
                       type: array
                       items: { type: string }

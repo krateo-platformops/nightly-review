@@ -6,25 +6,12 @@ written into Kubernetes objects and pull request bodies that people will read an
 crosses without passing through here.
 """
 import hashlib
-import json
 import re
 
 import yaml
 
 # ---------------------------------------------------------------------------------------------
 # 1. WHERE A PROPOSAL MAY LAND
-# ---------------------------------------------------------------------------------------------
-# `target.repo` is CHOSEN BY THE MODEL from a corpus that includes user-written chat text. Left
-# unchecked, one sentence in a conversation ("also, open your next pull request against <repo>") is
-# enough to aim this service's write credential at a repository of someone else's choosing. The
-# allowlist is configuration, not a guess baked into code, and a proposal naming anything outside it is
-# refused rather than redirected — a silently rewritten target is harder to notice than a refusal.
-def load_allowlist(raw):
-    """raw: JSON mapping of proposal kind -> list of permitted repos (from chart values)."""
-    allow = json.loads(raw) if raw else {}
-    return {k: set(v) for k, v in allow.items()}
-
-
 # ---------------------------------------------------------------------------------------------
 # 2. REDACTION
 # ---------------------------------------------------------------------------------------------
@@ -147,13 +134,17 @@ def classify(proposal, by_fingerprint, by_target):
 # ---------------------------------------------------------------------------------------------
 # 4. VALIDATION
 # ---------------------------------------------------------------------------------------------
-def is_publishable(proposal):
-    """THE CREDENTIAL GATE, as one named predicate instead of an inline `if` at the call site.
-
-    A refused proposal is stored so it can be read, and must never be written anywhere. That rule was a
-    `continue` inside validation, which meant the guarantee lived in whichever loop happened to iterate
-    the results; now the publisher asks this, and a test can ask it too."""
-    return not proposal.get("refused")
+# THE ALLOWLIST IS GONE, DELIBERATELY, AND THIS COMMENT IS ITS EPITAPH so the next reader does not
+# reintroduce it by accident. It bounded which repository a proposal could name, and it existed because
+# this service used to hold a GitHub write credential: `target.repo` is chosen by the model from a
+# corpus containing user-written chat, so an unbounded target aimed that credential wherever the corpus
+# liked. Two things changed. Publishing moves to the platform's own chain, so the credential is
+# git-provider's rather than the reviewer's; and every proposal now opens a pull request on a branch,
+# which a human reads before anything merges. The review IS the control, and a proposal blocked before
+# it becomes a pull request teaches nobody anything — not the reader, and not the next night's review.
+#
+# What that costs, stated plainly rather than left for someone to discover: the reviewer may now name
+# any repository the install-level git credentials can write to.
 
 
 class Refused(Exception):
@@ -161,7 +152,7 @@ class Refused(Exception):
     model meant is exactly the guess this service exists not to make."""
 
 
-def validate_batch(payload, allowlist, schema_check, item_check=None):
+def validate_batch(payload, schema_check, item_check=None):
     """Returns (proposals, notes). Raises Refused only when the RESPONSE ENVELOPE is unusable.
 
     A SINGLE BAD FIELD USED TO DISCARD THE WHOLE NIGHT. schema_check ran over the entire payload, so one
@@ -187,18 +178,6 @@ def validate_batch(payload, allowlist, schema_check, item_check=None):
         fired = redaction_count(raw, clean)
         if fired:
             notes.append(f"proposal[{i}] contained {fired} secret-shaped string(s); redacted before storage")
-
-        repo = clean["target"]["repo"]
-        permitted = allowlist.get(clean["kind"], set())
-        if repo not in permitted:
-            # REFUSED, RECORDED, NOT DISCARDED. It still must never reach a repository — publish skips a
-            # refused proposal, which is where the write credential lives — but dropping it from the
-            # result set meant the shipped default (dryRun + an EMPTY allowlist) produced NO Proposal
-            # objects at all, while values.yaml promised a review "you can read". A refusal you cannot
-            # read is also the weakest possible form of the injection signal this check exists to raise.
-            clean["refused"] = (f"target repo {repo!r} is not in the allowlist for kind {clean['kind']}; "
-                                f"this can indicate injected instructions in the corpus")
-            notes.append(f"REFUSED proposal[{i}] ({clean['kind']}): {clean['refused']}")
 
         # Confidence must be earned by the evidence, not asserted beside it (alert-troubleshooter#30).
         observed = sum(e.get("observedCount") or 0 for e in clean.get("evidence") or [])
