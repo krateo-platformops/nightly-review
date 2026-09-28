@@ -2,7 +2,7 @@
 
 THE SERVICE WRITES; THE AGENT NEVER DOES. Everything here runs on validated, redacted data and a
 credential the model cannot reach. That split is the whole safety argument: a prompt injection can at
-worst produce a malformed or out-of-allowlist proposal, which is refused upstream of this file.
+worst produce a malformed proposal, which is dropped upstream of this file.
 """
 import base64
 import datetime as dt
@@ -116,11 +116,10 @@ Produced by `ReviewRun/{run_name}` · tracked as `Proposal` in `{NAMESPACE}`.
 PHASE_PROPOSED = "Proposed"
 PHASE_PR_OPEN = "PrOpen"
 PHASE_SUPERSEDED = "Superseded"
-PHASE_REFUSED = "Refused"
 PHASE_FAILED = "Failed"
 
 OPEN_PHASES = frozenset({None, PHASE_PROPOSED, PHASE_PR_OPEN})
-WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_REFUSED, PHASE_FAILED})
+WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_FAILED})
 
 
 def create_proposal_cr(api, proposal, run_name, pr=None, phase=PHASE_PROPOSED, error=None):

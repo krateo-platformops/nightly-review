@@ -82,7 +82,6 @@ def main():
             prompt.SYSTEM, prompt.build_user_message(window, blocks), run_name, token)
         kept, notes = P.validate_batch(
             payload,
-            P.load_allowlist(os.environ.get("PROPOSAL_ALLOWLIST", "{}")),
             lambda p: jsonschema.validate(p, prompt.RESPONSE_SCHEMA),
             item_check=lambda p: jsonschema.validate(p, prompt.ITEM_SCHEMA),
         )
@@ -102,7 +101,7 @@ def main():
         return 1
 
     by_fingerprint, by_target = publish.open_index(api)
-    created, deduped, refused, superseded, refs = 0, 0, 0, 0, []
+    created, deduped, superseded, refs = 0, 0, 0, []
     for prop in kept:
         # THREE OUTCOMES, NOT TWO. Identical to something already open is a duplicate; aimed at the
         # same file with a different body is a replacement, and saying so is what `superseded` meant.
@@ -112,14 +111,6 @@ def main():
             continue
         pr = None
         err = None
-        # A REFUSED PROPOSAL IS RECORDED AND NEVER PUBLISHED. The allowlist gates the write credential,
-        # so the check that matters is this one, here, next to the only code that can reach a repository.
-        # It is asked BEFORE anything is superseded: a proposal the allowlist refuses must not be able
-        # to retire a legitimately open one, which would let an injected target silence a real finding.
-        if not P.is_publishable(prop):
-            refs.append(publish.create_proposal_cr(api, prop, run_name, phase=publish.PHASE_REFUSED))
-            refused += 1
-            continue
         if action == "supersede":
             publish.mark_superseded(api, prior)
             superseded += 1
@@ -135,7 +126,9 @@ def main():
     st |= {
         "phase": "PartiallyCompleted" if degraded else "Completed",
         "finishedAt": _now().isoformat(),
-        "proposals": {"created": created, "deduplicated": deduped, "refused": refused,
+        # `refused` is intentionally not written any more: the allowlist that produced it is gone.
+        # The field stays in the CRD so the runs that recorded one remain readable.
+        "proposals": {"created": created, "deduplicated": deduped,
                       "superseded": superseded, "refs": refs},
         "model": {"name": usage.get("model", ""),
                   "inputTokens": usage.get("inputTokens", 0),
@@ -149,7 +142,7 @@ def main():
                              "message": " | ".join(notes)[:2000],
                              "lastTransitionTime": _now().isoformat()}]
     _patch(api, run_name, st)
-    print(f"[run] {st['phase']}: {created} proposed, {refused} refused, {deduped} deduped, "
+    print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, "
           f"{superseded} superseded, degraded={degraded}", flush=True)
     return 0
 

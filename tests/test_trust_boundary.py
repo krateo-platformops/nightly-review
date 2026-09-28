@@ -27,37 +27,21 @@ def _p(**over):
     return base
 
 
-ALLOW = {"Alert": {"org/allowed"}, "Documentation": {"org/docs"}}
 NOOP = lambda payload: None
 
 
-# --- the control that matters most -------------------------------------------------------------
-def test_a_proposal_aimed_outside_the_allowlist_is_refused_not_redirected():
-    """target.repo is model-chosen from a corpus containing user chat text. One sentence in a
-    conversation must not be able to aim this service's write credential."""
-    kept, notes = P.validate_batch(
-        {"proposals": [_p(target={"repo": "attacker/exfil", "path": ".github/workflows/x.yml"})]},
-        ALLOW, NOOP)
-    assert any("REFUSED" in n and "attacker/exfil" in n for n in notes)
-    # NOT REDIRECTED is the point of the name: the target is recorded exactly as the model asked for it,
-    # because a silently rewritten target is harder to notice than a refusal. And not publishable.
-    assert len(kept) == 1 and kept[0]["target"]["repo"] == "attacker/exfil"
-    assert not P.is_publishable(kept[0])
-
-
-def test_the_refusal_names_injection_so_it_is_never_quiet():
-    _, notes = P.validate_batch({"proposals": [_p(target={"repo": "attacker/exfil"})]}, ALLOW, NOOP)
-    assert any("injected" in n.lower() for n in notes)
-
-
-def test_a_permitted_repo_for_the_WRONG_kind_is_still_refused():
-    """org/docs is allowlisted, but only for Documentation. Per-kind, not a global set."""
-    kept, _ = P.validate_batch({"proposals": [_p(target={"repo": "org/docs"})]}, ALLOW, NOOP)
-    # Recorded, marked, and NOT publishable. It is stored rather than dropped so the refusal can be read
-    # (with an empty allowlist, dropping meant a review produced nothing at all), but the guarantee that
-    # matters is the second assertion: it can never reach a repository.
-    assert len(kept) == 1 and kept[0]["refused"]
-    assert not P.is_publishable(kept[0])
+# --- what replaced the allowlist ----------------------------------------------------------------
+# Three tests stood here and are deliberately gone rather than rewritten: they asserted that a proposal
+# naming a repository outside a per-kind allowlist was refused, marked as a possible injection signal,
+# and never publishable. That control has been REMOVED on purpose — publishing moved to the platform's
+# own chain, so this service no longer holds the write credential the allowlist existed to bound, and
+# every proposal now becomes a pull request a human reads before anything merges.
+#
+# Deleting a test is the part of a removal that is easy to get wrong, so: what remains below is every
+# control that still stands between attacker-influenceable text and a pull request — redaction, the
+# confidence cap, the fingerprint, and per-item validation. None of those depended on the allowlist.
+# What is NO LONGER asserted anywhere, because it is no longer true, is that the reviewer cannot name
+# an arbitrary repository. It can. That is the accepted consequence, not an oversight.
 
 
 # --- redaction ---------------------------------------------------------------------------------
@@ -78,7 +62,7 @@ def test_secrets_are_scrubbed_wherever_they_appear(secret, marker):
 def test_redaction_reaches_every_field_of_a_real_proposal():
     kept, notes = P.validate_batch(
         {"proposals": [_p(rationale="token eyJhbGciOiJIUzI1NiJ9.aaaaaaaaaaaaaaaaaaaaaaaaaa.ccc")]},
-        ALLOW, NOOP)
+        NOOP)
     assert "eyJ" not in json.dumps(kept)
     assert any("redacted" in n for n in notes)
 
@@ -89,13 +73,13 @@ def test_high_confidence_from_a_single_observation_is_capped():
     kept, notes = P.validate_batch(
         {"proposals": [_p(confidence="high",
                           evidence=[{"source": "kagent-sessions", "summary": "once", "observedCount": 1}])]},
-        ALLOW, NOOP)
+        NOOP)
     assert kept[0]["confidence"] == "medium"
     assert any("capped to medium" in n for n in notes)
 
 
 def test_high_confidence_with_real_support_survives():
-    kept, _ = P.validate_batch({"proposals": [_p(confidence="high")]}, ALLOW, NOOP)
+    kept, _ = P.validate_batch({"proposals": [_p(confidence="high")]}, NOOP)
     assert kept[0]["confidence"] == "high"
 
 
@@ -122,33 +106,34 @@ def test_a_different_target_IS_a_different_proposal():
 # --- batch semantics ---------------------------------------------------------------------------
 def test_an_empty_proposal_list_is_valid_and_not_an_error():
     """Most nights a healthy platform deserves no changes. A loop that must produce something will."""
-    kept, notes = P.validate_batch({"proposals": []}, ALLOW, NOOP)
+    kept, notes = P.validate_batch({"proposals": []}, NOOP)
     assert kept == [] and notes == []
 
 
 def test_a_non_object_response_is_refused_whole():
     with pytest.raises(P.Refused):
-        P.validate_batch(["not", "an", "object"], ALLOW, NOOP)
+        P.validate_batch(["not", "an", "object"], NOOP)
 
 
-def test_one_bad_proposal_does_not_discard_the_good_ones():
-    kept, notes = P.validate_batch(
-        {"proposals": [_p(), _p(target={"repo": "attacker/x"}), _p()]}, ALLOW, NOOP)
-    assert len(kept) == 3 and any("REFUSED" in n for n in notes)
-    # two publishable, one refused — the good ones are untouched by their neighbour
-    assert len([p for p in kept if P.is_publishable(p)]) == 2
-    assert [p["target"]["repo"] for p in kept if not P.is_publishable(p)] == ["attacker/x"]
+def test_an_unexpected_target_is_kept_verbatim_and_never_rewritten():
+    """The allowlist is gone, so an unusual target is no longer refused — but the older guarantee still
+    holds and is the one worth keeping: the target is recorded EXACTLY as the model asked for it. A
+    silently rewritten target would be far harder to notice than a surprising one, and the pull request
+    is where a human sees it."""
+    kept, _ = P.validate_batch(
+        {"proposals": [_p(), _p(target={"repo": "somewhere/unexpected", "path": "x.yaml"}), _p()]}, NOOP)
+    assert len(kept) == 3
+    assert [p["target"]["repo"] for p in kept] == ["org/allowed", "somewhere/unexpected", "org/allowed"]
 
 
 def test_the_shipped_default_still_produces_something_to_read():
-    """dryRun + an EMPTY allowlist is what a fresh install runs, and values.yaml promises a review "you
-    can read". Every proposal is refused in that configuration, so refusals must be RECORDED: when they
-    were dropped instead, the default produced zero Proposal objects and the promise was false."""
-    kept, notes = P.validate_batch({"proposals": [_p(), _p(title="another")]}, P.load_allowlist("{}"), NOOP)
+    """A fresh install runs dryRun=true, and values.yaml promises a review "you can read". With the
+    allowlist removed, dryRun is the ONLY switch: every proposal is kept and fingerprinted so a Proposal
+    object exists to read, and nothing opens a pull request because the publisher never runs."""
+    kept, notes = P.validate_batch({"proposals": [_p(), _p(title="another")]}, NOOP)
     assert len(kept) == 2
-    assert all(not P.is_publishable(p) for p in kept)     # nothing can be written
     assert all(p.get("fingerprint") for p in kept)        # each still gets a stable name
-    assert sum("REFUSED" in n for n in notes) == 2
+    assert not any("REFUSED" in n for n in notes)         # nothing is refused any more
 
 
 def test_a_bad_item_is_dropped_and_its_siblings_survive():
@@ -157,5 +142,5 @@ def test_a_bad_item_is_dropped_and_its_siblings_survive():
     import jsonschema, prompt
     item = lambda p: jsonschema.validate(p, prompt.ITEM_SCHEMA)
     good, bad = _p(), _p(confidence="very high")
-    kept, notes = P.validate_batch({"proposals": [good, bad, good]}, ALLOW, NOOP, item_check=item)
+    kept, notes = P.validate_batch({"proposals": [good, bad, good]}, NOOP, item_check=item)
     assert len(kept) == 2 and any(n.startswith("DROPPED") for n in notes)

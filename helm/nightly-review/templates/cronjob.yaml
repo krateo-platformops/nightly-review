@@ -60,9 +60,7 @@ spec:
                   value: {{ .Values.config.clickhouseUrl | quote }}
                 - name: EVIDENCE_MAX_CHARS
                   value: {{ .Values.config.evidenceMaxChars | quote }}
-                # Both are JSON blobs so the allowlist and the queries stay reviewable as data.
-                - name: PROPOSAL_ALLOWLIST
-                  value: {{ .Values.proposalAllowlist | toJson | quote }}
+                # A JSON blob so the queries stay reviewable as data.
                 - name: CLICKHOUSE_QUERIES
                   value: {{ .Values.clickhouseQueries | toJson | quote }}
                 {{- with .Values.secrets.github.name }}
