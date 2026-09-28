@@ -59,7 +59,7 @@ def publish_version():
     return served[0]
 
 
-def create_publish_claim(api, proposal, run_name, version=None):
+def create_publish_claim(api, proposal, run_name, version=None, queries_run=None):
     """Render one proposal as a BuilderPublish claim. Returns {name, apiVersion, branch}.
 
     IT IS `builder: review`, AND THAT MATTERS MORE THAN IT LOOKS. The value sets krateo.io/builder on
@@ -102,7 +102,7 @@ def create_publish_claim(api, proposal, run_name, version=None):
             "pullRequest": {
                 "create": True,
                 "title": f"review: {proposal['title']}",
-                "body": _pr_body(proposal, run_name),
+                "body": _pr_body(proposal, run_name, queries_run),
             },
         },
     }
@@ -119,7 +119,7 @@ def create_publish_claim(api, proposal, run_name, version=None):
     return {"name": name, "apiVersion": body["apiVersion"], "branch": branch}
 
 
-def _pr_body(proposal, run_name):
+def _pr_body(proposal, run_name, queries_run=None):
     """The body leads with the EVIDENCE, not the suggestion.
 
     A reviewer's first question is "why do you think so", and a proposal that answers it last gets
@@ -128,9 +128,17 @@ def _pr_body(proposal, run_name):
         f"- **{e['source']}**"
         + (f" ({e['observedCount']} observed)" if e.get("observedCount") is not None else "")
         + f" — {e['summary']}"
-        + (f"\n  ```\n  {e['query']}\n  ```" if e.get("query") else "")
         for e in proposal["evidence"]
     )
+    # THE QUERIES THE SERVICE RAN, NOT THE ONES THE MODEL REMEMBERS RUNNING. The contract asks a proposal
+    # to carry its query so a reviewer can re-run it and disagree — and the model supplied a plausible
+    # paraphrase with no window clause, matching nothing that was issued. A reviewer who re-runs that
+    # gets a different number and concludes the reviewer is unreliable: correctly, for the wrong reason.
+    # These come from evidence.py, which issued them.
+    ran = ""
+    if queries_run:
+        ran = "\n\n## Queries this run issued\n\n" + "\n\n".join(
+            f"`{name}`\n```sql\n{sql}\n```" for name, sql in sorted(queries_run.items()))
     return f"""**Proposed by the nightly platform review — not by a person.** Confidence: `{proposal['confidence']}`.
 
 ## Why
@@ -139,7 +147,7 @@ def _pr_body(proposal, run_name):
 
 ## Evidence
 
-{ev}
+{ev}{ran}
 
 ## What this changes
 

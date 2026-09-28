@@ -93,11 +93,27 @@ spec:
                         type: boolean
                         description: >-
                           The source ANSWERED and returned nothing. Distinct from ok:false (it did not
-                          answer) and from a low `returned` (it answered with little): a source that
-                          returned nothing has not been read, so the run counts it as degraded and cannot
-                          report itself Completed. Without this field the three were indistinguishable in
-                          the record — `returned: 0` meant "no rows", "an identity that sees none" or "a
-                          shape we did not parse", and the run could not say which.
+                          answer) and from a low `returned` (it answered with little). Without this field
+                          the three were indistinguishable in the record — `returned: 0` meant "no rows",
+                          "an identity that sees none" or "a shape we did not parse". NOTE that empty
+                          alone is no longer degradation: an empty source carrying a `note` that explains
+                          why has been read, and the answer was nothing. Counting it made every
+                          successful run report PartiallyCompleted forever, which is a status carrying no
+                          information.
+                      truncated:
+                        type: boolean
+                        description: >-
+                          This source produced more than the per-source character cap and was CUT before
+                          reaching the model. It matters because the marker used to go only into the
+                          corpus, where the model could see it and the record could not, while `returned`
+                          still looked complete — so whoever wrote the most logs quietly decided what got
+                          reviewed. A proposal built on a truncated source must be readable as such.
+                      truncatedAtChars:
+                        type: integer
+                        description: The cap that was applied, so the record does not depend on the value in force today.
+                      droppedChars:
+                        type: integer
+                        description: How much was cut. A large number here means the interesting minority may never have been seen.
                       note:
                         type: string
                         description: >-

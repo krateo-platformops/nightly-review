@@ -30,6 +30,16 @@ SECRET_PATTERNS = [
     (re.compile(r"(?i)\b(client-certificate-data|client-key-data|token)\s*:\s*[A-Za-z0-9+/=]{40,}"),
      r"\1: <REDACTED>"),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{20,}"), "Bearer <REDACTED>"),
+    # ADDED AFTER THE LIST WAS AUDITED AND FOUND THIN. A denylist is never complete — that is not a
+    # reason to leave known families out of it, and each of these is a credential that would otherwise
+    # survive a model's summary into a pull request body.
+    (re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"), "<REDACTED-GITLAB-PAT>"),
+    (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}\b"), "<REDACTED-SLACK-TOKEN>"),
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), "<REDACTED-GOOGLE-API-KEY>"),
+    # user:pass@host in a URL — the password is the part that matters, so the host is left readable.
+    (re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+):[^\s/@]+@"), r"\1:<REDACTED>@"),
+    (re.compile(r"(?i)\b(api[_\-]?key|client[_\-]?secret|access[_\-]?token|password|passwd)"
+                r"\s*[=:]\s*[\"\']?([A-Za-z0-9._\-]{8,})[\"\']?"), r"\1=<REDACTED>"),
 ]
 
 

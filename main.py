@@ -59,9 +59,23 @@ def main():
         if body:
             blocks[name] = body
 
-    # `empty` counts as degraded: a source that answered but returned nothing has not been read, and a
-    # review that saw no agent conversations must not present itself as a complete one.
-    degraded = [n for n, s in st["evidence"].items() if not s.get("ok") or s.get("empty")]
+    # A SOURCE THAT FAILED IS DEGRADATION. A SOURCE THAT IS LEGITIMATELY EMPTY IS NOT.
+    #
+    # `empty` used to count as degraded on the reasoning that a source returning nothing has not really
+    # been read. That was right for a source that might have had something; it is wrong for one that
+    # CANNOT. kagent scopes A2A sessions per caller under A2A_USER_<contextId>, so this service's own
+    # identity sees none of its own by construction — and the run already explains that in the source's
+    # `note`. Counting it made every successful run report PartiallyCompleted, forever, which is a status
+    # carrying no information: people learn to ignore it, and then miss the night it means something.
+    #
+    # So: not-ok is degradation; empty is degradation only when nothing explains it. A source that says
+    # `ok` and carries a note about why it is empty has been read, and the answer was "nothing".
+    degraded = [n for n, st_ in st["evidence"].items()
+                if not st_.get("ok") or (st_.get("empty") and not st_.get("note"))]
+    unexplained_empty = [n for n, st_ in st["evidence"].items()
+                         if st_.get("ok") and st_.get("empty") and st_.get("note")]
+    if unexplained_empty:
+        print(f"[run] empty but explained, not counted as degraded: {unexplained_empty}", flush=True)
 
     if not blocks:
         # Nothing answered. This is a FAILED run, not an uneventful one — the distinction matters
@@ -103,6 +117,10 @@ def main():
     # Resolved ONCE per run rather than per proposal: the BuilderPublish kind is version-pinned by the
     # portal release that shipped it, and a run that published ten proposals should not make ten
     # identical discovery calls — nor straddle a version change halfway through a night.
+    # The queries this run ACTUALLY issued, by name, straight from the source that issued them. The
+    # pull-request body quotes these rather than the model's recollection of them.
+    queries_run = (st["evidence"].get("clickhouse") or {}).get("queries") or {}
+
     publish_version = None
     if not DRY_RUN:
         try:
@@ -126,7 +144,8 @@ def main():
             superseded += 1
         if not DRY_RUN:
             try:
-                claim = publish.create_publish_claim(api, prop, run_name, version=publish_version)
+                claim = publish.create_publish_claim(api, prop, run_name, version=publish_version,
+                                                     queries_run=queries_run)
             except Exception as exc:                          # noqa: BLE001
                 err = exc
                 print(f"[publish] claim failed for {prop['title']!r}: {exc}", flush=True)

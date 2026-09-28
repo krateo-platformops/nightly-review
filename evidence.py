@@ -24,10 +24,21 @@ MAX_ROWS = int(os.environ.get("EVIDENCE_MAX_ROWS", "200"))
 MAX_CHARS = int(os.environ.get("EVIDENCE_MAX_CHARS", "60000"))
 
 
-def _cap(text):
+def _cap(text, stats=None):
     """Bound what reaches the prompt. An unbounded corpus is a cost problem, a context problem, and —
-    because older spans predate the collector's JWT redaction — a disclosure problem."""
-    return text if len(text) <= MAX_CHARS else text[:MAX_CHARS] + f"\n... [truncated at {MAX_CHARS} chars]"
+    because older spans predate the collector's JWT redaction — a disclosure problem.
+
+    THE TRUNCATION IS NOW RECORDED ON THE RUN, not only marked inside the corpus. Before, the marker went
+    where only the model could see it while the status still read `returned: 75` and looked complete —
+    so whoever wrote the most logs quietly decided what got reviewed, and nothing said so. The marker
+    stays as well: the model should know its evidence was cut."""
+    if len(text) <= MAX_CHARS:
+        return text
+    if stats is not None:
+        stats["truncated"] = True
+        stats["truncatedAtChars"] = MAX_CHARS
+        stats["droppedChars"] = len(text) - MAX_CHARS
+    return text[:MAX_CHARS] + f"\n... [truncated at {MAX_CHARS} chars]"
 
 
 def clickhouse(queries, window):
@@ -35,7 +46,21 @@ def clickhouse(queries, window):
     if not CLICKHOUSE_URL:
         return None, {"ok": False, "error": "CLICKHOUSE_URL not configured"}
     blocks, stats = [], {"ok": True, "queried": 0, "returned": 0}
+    # THE REAL SQL, KEPT BY NAME. A proposal is supposed to carry the query that produced it so a human
+    # can re-run it and disagree; asking the MODEL to repeat it back produced a plausible paraphrase
+    # instead — one with no window clause, matching nothing that ran. The service knows exactly what it
+    # asked, so it is the service that records it.
+    stats["queries"] = {}
     for name, sql in (queries or {}).items():
+        # THE WINDOW IS A SAFETY CONTROL, NOT A COST ONE: spans older than the collector's JWT redaction
+        # can still carry live credentials, so an unbounded scan is a disclosure risk. Substitution is
+        # textual, so a query that simply omits the placeholders used to scan everything, silently.
+        if "{from}" not in sql or "{to}" not in sql:
+            stats["ok"] = False
+            stats.setdefault("error", "")
+            stats["error"] += (f"{name}: refused — the query does not carry both {{from}} and {{to}}, "
+                               f"so it would not be bounded to the review window; ")
+            continue
         bound = sql.replace("{from}", window["from"]).replace("{to}", window["to"])
         try:
             r = requests.post(
@@ -49,6 +74,7 @@ def clickhouse(queries, window):
             rows = [ln for ln in r.text.splitlines() if ln.strip()]
             stats["queried"] += 1
             stats["returned"] += len(rows)
+            stats["queries"][name] = bound
             blocks.append(f"-- {name}\n-- query: {bound}\n" + "\n".join(rows[:MAX_ROWS]))
         except Exception as exc:                              # noqa: BLE001
             stats["ok"] = False
@@ -56,7 +82,7 @@ def clickhouse(queries, window):
             stats["error"] += f"{name}: {exc}; "
     # Redact on the way IN as well as out. The agent should never be handed a credential it could
     # faithfully quote back into a proposal.
-    return _cap(redact("\n\n".join(blocks))), stats
+    return _cap(redact("\n\n".join(blocks)), stats), stats
 
 
 def kagent_sessions(token, limit=50):
@@ -139,6 +165,7 @@ def kubernetes(api):
                  f"threshold={(a.get('spec') or {}).get('threshold')} "
                  f"{(a.get('spec') or {}).get('thresholdType', '')}"
                  for a in alerts]
-        return _cap("\n".join(lines)), {"ok": True, "queried": 1, "returned": len(alerts)}
+        st = {"ok": True, "queried": 1, "returned": len(alerts)}
+        return _cap("\n".join(lines), st), st
     except Exception as exc:                                  # noqa: BLE001
         return None, {"ok": False, "error": f"alerts: {exc}"}
