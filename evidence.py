@@ -10,6 +10,7 @@ EVERY SOURCE FAILS INDEPENDENTLY AND VISIBLY. A source that errors is recorded w
 run becomes PartiallyCompleted. It is never dropped silently, because a proposal built on half the
 evidence must be readable as such.
 """
+import datetime as dt
 import os
 
 import requests
@@ -41,6 +42,39 @@ def _cap(text, stats=None):
     return text[:MAX_CHARS] + f"\n... [truncated at {MAX_CHARS} chars]"
 
 
+def _ch_time(value):
+    """A window bound ClickHouse can use its primary-key index on.
+
+    THIS ONE LINE WAS THE WHOLE OF THE TIMEOUT. The run records its window as ISO-8601, which is right
+    for the CR, and the same string was substituted straight into SQL — so ClickHouse compared a
+    DateTime64 column against '2026-09-27T14:17:43.745807+00:00' and could not prune by range, and
+    full-scanned 13.9M rows every night.
+
+    Measured on 057, same predicate, same 96k matching rows: the ISO literal takes 167 SECONDS, past
+    the 120s read timeout; 'YYYY-MM-DD HH:MM:SS' takes 15.7s, and the full grouped query 2.3s. That is
+    a 6.4x difference from the shape of a timestamp, and it is why this query failed on roughly half of
+    all runs while the other two never did — they read the same window and scan far less.
+
+    The ReviewRun keeps the ISO form: its CRD types the window as date-time, and the record should stay
+    readable. Only what goes into SQL is converted."""
+    v = str(value)
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            parsed = dt.datetime.strptime(v, fmt)
+        except ValueError:
+            continue
+        # ONLY CONVERT WHAT CARRIES AN OFFSET. astimezone() on a NAIVE datetime assumes the machine's
+        # local zone, which would silently slide the review window by that offset — on a box at UTC+2
+        # the first version of this shifted 14:17 to 12:17, and a window that is quietly two hours wrong
+        # is worse than the slow query it was written to fix. A naive value is already UTC here, because
+        # main.py builds the window with datetime.now(timezone.utc).
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(dt.timezone.utc)
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    # Unparseable: hand it through untouched rather than guess. A slow query beats a wrong window.
+    return v
+
+
 def clickhouse(queries, window):
     """queries: {name: sql} from chart values. `{from}`/`{to}` are substituted, nothing else is."""
     if not CLICKHOUSE_URL:
@@ -61,7 +95,7 @@ def clickhouse(queries, window):
             stats["error"] += (f"{name}: refused — the query does not carry both {{from}} and {{to}}, "
                                f"so it would not be bounded to the review window; ")
             continue
-        bound = sql.replace("{from}", window["from"]).replace("{to}", window["to"])
+        bound = sql.replace("{from}", _ch_time(window["from"])).replace("{to}", _ch_time(window["to"]))
         try:
             r = requests.post(
                 CLICKHOUSE_URL,

@@ -269,3 +269,50 @@ def test_the_denylist_covers_the_families_it_was_missing():
     secret = "s3cret" + "pw"                                                      # gitleaks:allow
     url = P.redact(f"postgres://user:{secret}@db.internal:5432/x")
     assert secret not in url and "db.internal" in url, "redact the password, keep the host readable"
+
+
+# --- the window bound ClickHouse can actually index ---------------------------------------------
+
+def test_the_sql_window_is_a_plain_datetime_not_iso():
+    """Measured on 057: the ISO literal the run records takes 167s against a 120s read timeout, because
+    ClickHouse cannot range-prune a DateTime64 column compared to '...T...+00:00'. The plain form takes
+    15.7s. This is the whole of issue #20."""
+    import evidence as E
+    assert E._ch_time("2026-09-27T14:17:43.745807+00:00") == "2026-09-27 14:17:43"
+    assert E._ch_time("2026-09-27T14:17:43+00:00") == "2026-09-27 14:17:43"
+    assert E._ch_time("2026-09-27T14:17:43") == "2026-09-27 14:17:43"
+
+
+def test_an_unparseable_window_is_passed_through_rather_than_guessed():
+    import evidence as E
+    assert E._ch_time("not-a-time") == "not-a-time"
+
+
+def test_the_substituted_query_carries_the_plain_form(monkeypatch):
+    import evidence as E
+    seen = {}
+    class _R:
+        status_code = 200; text = "a\nb"
+        def raise_for_status(self): pass
+    def fake_post(url, data=None, **k):
+        seen["sql"] = data; return _R()
+    monkeypatch.setattr(E, "CLICKHOUSE_URL", "http://ch.invalid")
+    monkeypatch.setattr(E, "requests", types.SimpleNamespace(post=fake_post))
+    E.clickhouse({"q": "SELECT 1 WHERE Timestamp BETWEEN '{from}' AND '{to}' LIMIT 1"},
+                 {"from": "2026-09-27T14:17:43.745807+00:00", "to": "2026-09-28T14:17:43.745807+00:00"})
+    assert "2026-09-27 14:17:43" in seen["sql"], seen["sql"]
+    assert "T14:17:43.745807" not in seen["sql"]
+
+
+def test_a_naive_window_bound_is_not_shifted_by_the_machines_timezone():
+    """astimezone() on a naive datetime assumes LOCAL time. The first version of _ch_time did that and
+    slid the window by the host's offset — two hours on the machine it was written on. A window that is
+    quietly wrong is worse than the slow query this function exists to fix."""
+    import evidence as E
+    assert E._ch_time("2026-09-27T14:17:43") == "2026-09-27 14:17:43"
+    assert E._ch_time("2026-09-27T14:17:43.500000") == "2026-09-27 14:17:43"
+
+
+def test_an_offset_window_bound_is_converted_to_utc():
+    import evidence as E
+    assert E._ch_time("2026-09-27T16:17:43+02:00") == "2026-09-27 14:17:43"
