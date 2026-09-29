@@ -98,16 +98,16 @@ spec:
                         type: string
                         description: >-
                           WHAT THIS SOURCE WAS ALLOWED TO SEE, in words, when that is not the obvious
-                          thing. Written by kagent-sessions, which reads session METADATA for EVERY user
-                          out of kagent's Postgres — a deliberate departure from the per-user RBAC the
-                          rest of this platform enforces, and therefore something the record must state
-                          rather than leave to be discovered. It reads the `session` table only; message
-                          bodies live in event.data and task, and the database role is revoked on both,
-                          so the limit is a privilege the role does not hold rather than a promise the
-                          code makes. Declared here because this schema is structural: an undeclared
-                          field is pruned on write, and the run would then claim a scope it never
-                          recorded — the same silent-pruning bug that hid the truncation fields in
-                          0.1.14.
+                          thing. Written by kagent-sessions, which reads session metadata AND the text of
+                          user-authored messages for EVERY user out of kagent's Postgres — a deliberate
+                          departure from the per-user RBAC the rest of this platform enforces, and
+                          therefore something the record must state rather than leave to be discovered.
+                          The role holds SELECT on `session` and `event` and is revoked on `task`; agent
+                          replies and tool output are in `event` too, and are left out by the query and
+                          re-checked in code, not by the grant. Declared here because this schema is
+                          structural: an undeclared field is pruned on write, and the run would then
+                          claim a scope it never recorded — the same silent-pruning bug that hid the
+                          truncation fields in 0.1.14.
                       error:     { type: string }
                       empty:
                         type: boolean
@@ -147,6 +147,32 @@ spec:
                           until 0.1.21 because it was never declared: every run on 057 came back with
                           ok/queried/returned and no queries, so the record the pull request body pointed
                           readers at did not exist. Counts and SQL only; the rows stay out of etcd.
+                      questions:
+                        type: integer
+                        description: >-
+                          User-authored messages quoted to the model from kagent sessions in the window,
+                          after the per-session caps. The TEXT never lands here — only the count.
+                      questionSessions:
+                        type: integer
+                        description: Conversations those questions came from.
+                      droppedMessages:
+                        type: integer
+                        description: >-
+                          Questions inside the window that the per-session message or character cap
+                          kept from the model. Recorded beside `truncated`, which is set too.
+                      droppedSessions:
+                        type: integer
+                        description: Conversations with questions in the window beyond the session cap.
+                      shapes:
+                        type: object
+                        additionalProperties: { type: integer }
+                        description: >-
+                          HOW THE STORED EVENTS READ, counted: matched (a user's question), unmatched
+                          (valid JSON that is not one), unparseable, empty, and notUserAuthored (agent
+                          replies and tool output the query left in the database). kagent's event.data is
+                          an ADK event serialised verbatim and its shape is pinned nowhere readable, so
+                          this is what tells "nobody asked anything" from "the reader no longer
+                          understands the corpus" — two identical empty results that mean opposite things.
                       shape:
                         type: string
                         description: >-
