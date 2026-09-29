@@ -76,7 +76,7 @@ def test_a_changed_proposal_for_the_same_target_supersedes_rather_than_duplicate
     old = _prop("replicas: 3\n")
     new = _prop("replicas: 5\n")
     index = {P.target_key(old): {"fingerprint": P.fingerprint(old), "name": "p-old"}}
-    assert P.classify(new, {}, index) == ("supersede", "p-old")
+    assert P.classify(new, {}, index) == ("supersede", ["p-old"])
 
 
 def test_an_identical_proposal_is_deduplicated_not_superseded():

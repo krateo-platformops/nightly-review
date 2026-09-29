@@ -8,6 +8,50 @@ disagreed about whether a tool result was keyed `text` or `payload`, and the fea
 release because nothing made them agree in one place.
 """
 
+# THE ONE ALERT KIND, AND ITS SHAPE, SPELLED OUT (#24). The prompt used to say "Alert" and stop, so the
+# model filled the gap from its training data: of the thirteen Alert proposals on 057 on 2026-09-29, NOT
+# ONE was right — eleven were monitoring.coreos.com/v1 PrometheusRules and two were Alerts in a
+# `monitoring.krateo.io/v1alpha1` group the model invented. Neither exists here. No
+# PrometheusRule CRD is installed and no monitoring.krateo.io group is served; the platform's alerts are
+# observability.krateo.io/v1alpha1 Alerts, which a controller turns into HyperDX alerts over ClickHouse
+# logs. A proposal of any other kind would merge cleanly and then never fire, which is worse than no
+# proposal — it reads as coverage.
+#
+# The spec below is the LIVE CRD's, read from 057 (`kubectl get crd alerts.observability.krateo.io`,
+# 2026-09-29), not recalled. proposals.alert_kind_violation refuses anything else in change.content, so
+# this text is the ask and that function is the check; when the CRD grows a field, update both.
+ALERT_API_VERSION = "observability.krateo.io/v1alpha1"
+ALERT_KIND = f"""THE ALERT KIND. An Alert proposal is ONE object, and only this one:
+
+  apiVersion: {ALERT_API_VERSION}
+  kind: Alert
+  metadata:
+    name: <lowercase-kebab-name>
+    namespace: krateo-system
+  spec:
+    interval: 15m            # REQUIRED. The evaluation window; one of 1m 5m 15m 30m 1h 6h 12h 1d.
+    threshold: 1             # REQUIRED, a number. What is compared is a COUNT OF LOG ROWS matching
+                             # `where` inside the window — never negative.
+    thresholdType: above     # REQUIRED. above | below | above_exclusive | below_or_equal | equal |
+                             # not_equal | between | not_between.
+    where: "..."             # A ClickHouse SQL boolean expression over the logs source (NOT Lucene,
+                             # NOT PromQL), placed verbatim in the query's WHERE clause. Empty counts
+                             # every row. Severity is in the text, not a column, so predicates read Body
+                             # and, for Kubernetes events, the JSON inside it — e.g.
+                             # ResourceAttributes['telemetry.source'] = 'k8s-events'
+                             #   AND JSONExtractString(Body, 'object', 'reason') = 'BackOff'
+    displayName: "..."       # optional; defaults to metadata.name
+    message: "..."           # optional; markdown sent with the notification
+
+  The spec has NO other fields. "above 0" fires on every evaluation, even an empty one, and "below 0"
+  can never fire; the controller rejects both as Invalid. Use threshold 1 with "above" for "at least
+  one" and threshold 1 with "below" for "none in this window".
+
+  NEVER a PrometheusRule, and never anything in monitoring.krateo.io or monitoring.coreos.com. Nothing
+  on this platform evaluates them: such an alert would merge and then never fire. A proposal carrying
+  one is discarded by this service before anyone reads it. The Alerts that already exist are listed in
+  the kubernetes evidence — propose gaps, not duplicates of those."""
+
 # The evidence we hand the model includes ClickHouse rows and, worse, the text of real user
 # conversations with kagent. That is attacker-influenceable input: anyone who can talk to an agent can
 # write text that lands in tomorrow's prompt. It is fenced as data, and the model is told to report
@@ -46,7 +90,8 @@ enthusiasm:
 A single observation never justifies high confidence, however striking it is.
 
 Propose only these kinds, each landing in one repository:
-  Alert          a gap in what the platform notices — an error pattern nobody is alerted on
+  Alert          a gap in what the platform notices — an error pattern nobody is alerted on.
+                 See THE ALERT KIND below: there is exactly one alert object on this platform.
   Widget         a portal page or widget that would answer a question people keep asking agents
   Prompt         an agent prompt that is demonstrably misleading its agent, quoting the exchange
   Policy         an agentgateway policy to tune, with the traffic that justifies it
@@ -54,7 +99,23 @@ Propose only these kinds, each landing in one repository:
 
 Be specific rather than numerous, but do not mistake brevity for rigour: if the evidence supports six
 findings, return six. If two proposals would touch two repositories, split them. Never propose a change
-you cannot point at evidence for — and never withhold one you can."""
+you cannot point at evidence for — and never withhold one you can.
+
+EVERY PROPOSAL NAMES ITS SUBJECT: the finding it is about, as `component/signal`, so that tomorrow's
+proposal about the same problem can be recognised as the same problem even when you word it, target it
+or fix it differently.
+  component  the service, deployment or agent the evidence is about, spelled as the evidence spells it
+             (a ClickHouse ServiceName, a Deployment name, a kagent agent name) — NOT the repository you
+             are proposing to change, which is a separate choice and can differ night to night
+  signal     the most specific STABLE identifier the evidence gives for what is wrong: a Kubernetes
+             event reason (BackOff, CannotObserveExternalResource), an HTTP status with the operation
+             it failed (rbac-generation-http-500), the fixed prefix of a repeated log message
+Never put counts, dates, thresholds or adjectives in it; they change every night and the whole point
+of the subject is that it does not. Examples: installer-chart-inspector/rbac-generation-http-500,
+snowplow/subjectaccessreview-unauthorized, kagent/agent-never-used. Two proposals of different kinds
+about the same finding (an Alert and its Documentation) carry the same subject.
+
+""" + ALERT_KIND
 
 # The response contract. Anything not matching this is refused whole — a partially-valid batch is not
 # salvaged, because guessing which half the model meant is how a review loop starts proposing things
@@ -74,9 +135,24 @@ RESPONSE_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "title", "rationale", "evidence", "confidence", "target", "change"],
+                "required": ["kind", "subject", "title", "rationale", "evidence", "confidence", "target",
+                             "change"],
                 "properties": {
                     "kind": {"enum": ["Alert", "Widget", "Prompt", "Policy", "Documentation"]},
+                    # REQUIRED, BUT DELIBERATELY LOOSE HERE. The schema only insists on a string; the
+                    # shape (`component/signal`, lowercase kebab) is imposed by proposals.normalise_subject,
+                    # which REWRITES rather than refuses. A pattern here would drop the whole finding for a
+                    # capital letter or a colon where a slash was asked for, and a finding lost to
+                    # punctuation is the #25 failure over again. A subject that cannot be normalised at
+                    # all is kept as null, and null never groups — see proposals.subject_key.
+                    "subject": {
+                        "type": "string", "minLength": 3, "maxLength": 200,
+                        "description": "component/signal — what the finding is ABOUT, stable across nights. "
+                                       "component: the service, deployment or agent as the evidence names it "
+                                       "(not the target repo). signal: the most specific stable identifier of "
+                                       "what is wrong (an event reason, an HTTP status with its operation, a log "
+                                       "message's fixed prefix). No counts, dates, thresholds or adjectives.",
+                    },
                     "title": {"type": "string", "maxLength": 200},
                     "rationale": {"type": "string", "maxLength": 4000},
                     "confidence": {"enum": ["high", "medium", "low"]},
@@ -101,10 +177,11 @@ RESPONSE_SCHEMA = {
                             },
                         },
                     },
-                    # NOTE: `target.repo` is model-chosen and therefore untrusted. It is checked against
-                    # an allowlist before anything is written — see proposals.ALLOWED_TARGETS. Without
-                    # that check, a sentence in a user's chat could aim a pull request at a repository
-                    # of the attacker's choosing.
+                    # NOTE: `target.repo` is model-chosen and therefore untrusted. There is NO allowlist
+                    # any more (see the epitaph in proposals.py): the service holds no git credential and
+                    # every proposal becomes a pull request a human reads. What IS checked is whether the
+                    # repository exists — targets.resolve, recorded as the TargetResolved condition — and
+                    # that check validates the string's shape before it goes anywhere near a URL.
                     "target": {
                         "type": "object",
                         "additionalProperties": False,

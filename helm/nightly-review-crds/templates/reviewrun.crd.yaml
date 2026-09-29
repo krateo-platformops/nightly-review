@@ -138,6 +138,15 @@ spec:
                         type: string
                         description: >-
                           Why this source returned what it did, in words, when the numbers cannot say it.
+                      queries:
+                        type: object
+                        additionalProperties: { type: string }
+                        description: >-
+                          THE SQL THIS SOURCE ACTUALLY RAN, by name, with the window already bound — what
+                          a reviewer re-runs to disagree with a proposal. Written since 0.1.14 and PRUNED
+                          until 0.1.21 because it was never declared: every run on 057 came back with
+                          ok/queried/returned and no queries, so the record the pull request body pointed
+                          readers at did not exist. Counts and SQL only; the rows stay out of etcd.
                       shape:
                         type: string
                         description: >-
@@ -162,12 +171,41 @@ spec:
                     refs:
                       type: array
                       items: { type: string }
+                summary:
+                  type: string
+                  maxLength: 2000
+                  description: >-
+                    The model's own account of the night, from the response contract's `summary` —
+                    asked for since the first release and discarded until 0.1.21. Redacted like every
+                    other model string. The model's words, not a verified finding.
+                steps:
+                  type: array
+                  description: >-
+                    Where the run spent its time and where it stopped: gather, ask, validate, publish,
+                    record, in that order. The phase says THAT a run failed; this says in which stage,
+                    and in particular whether the model was ever called. `publish` is Skipped on a dry
+                    run — the permanent mode, since the portal opens pull requests per proposal.
+                  items:
+                    type: object
+                    required: [name, phase]
+                    properties:
+                      name:       { type: string, enum: [gather, ask, validate, publish, record] }
+                      phase:      { type: string, enum: [Running, Succeeded, Failed, Skipped] }
+                      startedAt:  { type: string, format: date-time }
+                      finishedAt: { type: string, format: date-time }
+                      message:    { type: string, maxLength: 500 }
                 model:
                   type: object
+                  description: >-
+                    Token usage THE AGENT REPORTED, from kagent's `kagent_usage_metadata` on the A2A
+                    stream. Absent when it reported none. Until 0.1.21 this was read from a key kagent
+                    never sends and written unconditionally, so every run carried zeros that looked like
+                    a measurement. There is no model NAME: the A2A response does not carry one, and the
+                    chart's configured ModelConfig is what was asked for, not what answered.
                   properties:
-                    name:         { type: string }
                     inputTokens:  { type: integer }
                     outputTokens: { type: integer }
+                    totalTokens:  { type: integer }
                 error: { type: string }
                 conditions:
                   type: array

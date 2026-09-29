@@ -186,11 +186,18 @@ OPEN_PHASES = frozenset({None, PHASE_PROPOSED, PHASE_PR_OPEN})
 WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_FAILED})
 
 
-def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED, error=None):
+def proposal_name(proposal):
+    """The Proposal's object name, derived from its fingerprint. Exposed so a supersession can name its
+    successor BEFORE the successor is written — the old proposal's supersededBy is set first."""
+    return f"p-{proposal['fingerprint'][:16]}"
+
+
+def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED, error=None,
+                       conditions=None):
     obj = {
         "apiVersion": f"{GROUP}/{VERSION}", "kind": "Proposal",
         "metadata": {
-            "name": f"p-{proposal['fingerprint'][:16]}",
+            "name": proposal_name(proposal),
             "namespace": NAMESPACE,
             "labels": {
                 "review.krateo.io/kind": proposal["kind"],
@@ -204,8 +211,11 @@ def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED
             # to find the claim whose pull request it must read back.
             | ({"review.krateo.io/publish-claim": claim["name"]} if claim else {}),
         },
+        # `subject` only when there is one. The field is optional in the CRD — every proposal written
+        # before it existed lacks it — and a JSON null is not an absent string to the apiserver.
         "spec": {k: proposal[k] for k in
-                 ("kind", "title", "rationale", "evidence", "confidence", "target", "change", "fingerprint")}
+                 ("kind", "subject", "title", "rationale", "evidence", "confidence", "target", "change",
+                  "fingerprint") if proposal.get(k) is not None}
                 | {"producedBy": {"runRef": run_name, "agent": "krateo-autopilot"}},
     }
     try:
@@ -224,7 +234,8 @@ def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED
     # chain opens the PR minutes later, on its own reconcile. Writing PrOpen here would be a guess, and
     # writing status.pullRequest would be a fabrication — both stay for the reconciler that reads the
     # real outcome back. Proposed is the honest phase for "handed to the chain, not yet decided".
-    status = {"phase": phase, "conditions": []}
+    status = {"phase": phase,
+              "conditions": [c | {"lastTransitionTime": _now()} for c in (conditions or [])]}
     if error:
         status |= {"phase": PHASE_FAILED, "error": str(error)[:500]}
     api.patch_namespaced_custom_object_status(
@@ -232,17 +243,27 @@ def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED
     return created["metadata"]["name"]
 
 
-def open_index(api):
-    """(by_fingerprint, by_target) over proposals that are still undecided.
+def open_index(api, run_name=None):
+    """(by_fingerprint, by_target, by_subject) over proposals that are still undecided.
 
-    Two indexes because there are two questions, and the old code could only ask one. By fingerprint
-    answers "have we said exactly this?" — a duplicate, dropped. By target answers "have we said
-    something else about this same file?" — a replacement, which supersedes. Returning only the first
-    is why every re-worded repeat looked new."""
+    Three indexes because there are three questions. By fingerprint answers "have we said exactly
+    this?" — a duplicate, dropped. By target answers "have we said something else about this same
+    file?" — and by subject "have we said something else about this same FINDING?". Both of those are
+    replacements, which supersede. Returning only the first is why every re-worded repeat looked new.
+
+    BY SUBJECT IS NARROWER THAN THE OTHER TWO, deliberately:
+    - PROPOSED ONLY, not PrOpen. The portal opens pull requests per proposal; a proposal in PrOpen has a
+      human's pull request hanging off it, and retiring it from under that PR on the strength of a
+      model's re-wording would orphan work somebody is doing. The target index keeps its older, wider
+      reach because a same-file replacement is a replacement of the very change that PR carries.
+    - EARLIER RUNS ONLY. Two proposals in one run sharing a subject are the model splitting one finding
+      across two changes, not tonight replacing last night.
+    - NEVER A NULL SUBJECT. Legacy proposals carry none; see proposals.subject_key."""
     got = api.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals").get("items", [])
-    by_fingerprint, by_target = {}, {}
+    by_fingerprint, by_target, by_subject = {}, {}, {}
     for p in got:
-        if (p.get("status") or {}).get("phase") not in OPEN_PHASES:
+        phase = (p.get("status") or {}).get("phase")
+        if phase not in OPEN_PHASES:
             continue
         spec = p.get("spec") or {}
         fp, name = spec.get("fingerprint"), p["metadata"]["name"]
@@ -250,11 +271,33 @@ def open_index(api):
             continue
         by_fingerprint[fp] = name
         by_target[proposals.target_key(spec)] = {"fingerprint": fp, "name": name}
-    return by_fingerprint, by_target
+        key = proposals.subject_key(spec)
+        if (key is not None and phase == PHASE_PROPOSED
+                and (spec.get("producedBy") or {}).get("runRef") != run_name):
+            by_subject.setdefault(key, []).append({"fingerprint": fp, "name": name})
+    return by_fingerprint, by_target, by_subject
 
 
-def mark_superseded(api, name):
+def forget(name, by_target, by_subject):
+    """Drop a superseded proposal from the indexes, so a second proposal in the same run cannot
+    supersede it again and count it twice."""
+    for k in [k for k, v in by_target.items() if v["name"] == name]:
+        del by_target[k]
+    for k in list(by_subject):
+        by_subject[k] = [v for v in by_subject[k] if v["name"] != name]
+
+
+def mark_superseded(api, name, by=None, reason=None):
     """The open proposal this one replaces. Status only — the spec of a superseded proposal is left
-    exactly as it was, because it is the record of what was suggested and when."""
+    exactly as it was, because it is the record of what was suggested and when.
+
+    supersededBy was declared in the CRD from the start and never written, so a Superseded proposal
+    said it had been replaced without saying by what. `decidedAt` is set because Superseded is terminal:
+    this is the moment the question it asked stopped being open."""
+    status = {"phase": PHASE_SUPERSEDED, "decidedAt": _now(), "decidedBy": "nightly-review"}
+    if by:
+        status["supersededBy"] = by
+    if reason:
+        status["reason"] = reason
     api.patch_namespaced_custom_object_status(
-        GROUP, VERSION, NAMESPACE, "proposals", name, {"status": {"phase": PHASE_SUPERSEDED}})
+        GROUP, VERSION, NAMESPACE, "proposals", name, {"status": status})

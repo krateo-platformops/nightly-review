@@ -62,6 +62,10 @@ config:
   # stayed unbounded: it never went quiet, so it never timed out.
   a2aTimeoutSeconds: 900
   a2aReadTimeoutSeconds: 180
+  # Whether a proposal's target.repo exists is asked here, ANONYMOUSLY — this service holds no git
+  # credential and is not given one for this. A private repository answers 404 like a missing one; the
+  # TargetResolved condition says so. Empty disables the check (TargetResolved=Unknown/CheckDisabled).
+  targetCheckApiUrl: https://api.github.com
 
 # Credentials are referenced, never inlined.
 secrets:
@@ -81,6 +85,13 @@ secrets:
     name: ""
     userKey: username
     passwordKey: password
+# WHO MAY ACT ON A PROPOSAL FROM THE PORTAL: read Proposals and ReviewRuns, and write a Proposal's
+# STATUS (the decision, the pull request, supersededBy) — never its spec. `admins` is the group Krateo's
+# authn gives its admin users; see templates/rbac.yaml for why this is a binding and not an aggregation.
+portalAdminAccess:
+  enabled: true
+  groups: [admins]
+
 resources:
   requests: { cpu: 100m, memory: 256Mi }
   limits:   { memory: 1Gi }

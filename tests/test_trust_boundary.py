@@ -17,7 +17,7 @@ import proposals as P
 
 def _p(**over):
     base = {
-        "kind": "Alert", "title": "t", "rationale": "r", "confidence": "medium",
+        "kind": "Alert", "subject": "svc/some-signal", "title": "t", "rationale": "r", "confidence": "medium",
         "evidence": [{"source": "clickhouse", "summary": "s", "observedCount": 9},
                      {"source": "clickhouse", "summary": "s2", "observedCount": 4}],
         "target": {"repo": "org/allowed", "path": "p.yaml"},

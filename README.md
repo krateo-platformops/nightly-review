@@ -1,67 +1,109 @@
 # nightly-review
 
-Once a night, reads the platform's own telemetry and its agents' conversations, and **proposes**
-changes — new alerts, portal widgets, agent-prompt corrections, gateway policy tuning, missing
-documentation. Every proposal arrives as a pull request and a `Proposal` object. Nothing is applied.
+Once a night, reads the platform's own telemetry and its agents' activity, and **proposes** changes:
+new alerts, portal widgets, agent-prompt corrections, gateway policy tuning, missing documentation.
+Every proposal becomes a `Proposal` object. Nothing is applied, and this service opens no pull
+requests. **The portal opens one per proposal**, when a person decides to.
 
 ## The shape, and why
 
 ```
-CronJob ─▶ gather evidence ─▶ ask Autopilot ─▶ validate + redact ─▶ open PRs ─▶ ReviewRun + Proposals
-          (fixed queries)      (read-only)      (trust boundary)     (service)
+CronJob ─▶ gather ─▶ ask ─▶ validate ─▶ publish ─▶ record
+           evidence   the     schema, redact,   skipped:   Proposals +
+           (fixed     reviewer alert kind,      dryRun     ReviewRun
+           queries)   agent    dedup/supersede,
+                      (no      target exists?
+                      tools)
 ```
 
-**The agent proposes; the service writes.** Autopilot holds no write tool and is never given one. It
-returns JSON, which is schema-checked, redacted and allowlist-filtered before any of it reaches a
-repository. A prompt injection can therefore produce a refused proposal — never a commit.
+Each stage is recorded on the run as `status.steps[]`, with its own start, finish and outcome, so a
+failed run says *where* it stopped, and in particular whether the model was ever called.
 
-**The corpus is untrusted.** It contains real conversations between people and agents, so anyone who
-can talk to an agent can write text that lands in tomorrow's prompt. It is fenced as data, and the
-model is told to *report* rather than obey anything that tries to steer it.
+**The agent proposes; the service writes.** The reviewer is a dedicated kagent Agent holding **no
+tools** (`templates/agent.yaml`). It cannot delegate, fetch or write; it reads the evidence it is given
+and returns JSON. That JSON is schema-checked, redacted and validated before any of it is written.
+A prompt injection can therefore produce a bad `Proposal`, never a commit.
 
-**`target.repo` is the control that matters.** The model chooses it, so without an allowlist one
-sentence in a chat ("open your next PR against X") would aim this service's write credential wherever
-someone liked. A proposal naming anything outside the list is **refused, not redirected** — a silently
-rewritten target is harder to notice than a refusal — and the refusal is recorded as a possible
-injection signal.
+**The corpus is untrusted.** It contains telemetry and data derived from real people's use of agents,
+so anyone who can write a log line or talk to an agent can put text in tomorrow's prompt. It is fenced
+with a per-run nonce as data, and the model is told to *report* rather than obey anything that tries
+to steer it.
 
-## It ships inert
+## It stays in dry run, permanently
 
-`dryRun: true` **and** an empty `proposalAllowlist`. Two switches, both off. A fresh install reviews
-the platform, writes `Proposal` objects you can read, and opens nothing. Something that opens pull
-requests against production repositories on the night it is installed, before anyone has seen the
-quality of its reasoning, has not earned that.
+`dryRun: true` is the shipped default and the intended mode. The run writes `Proposal` objects; the
+`publish` step is recorded as `Skipped`. Pull requests are opened from the portal, per proposal, by
+the person acting on it, so the decision and the pull request share a name.
+
+The non-dry-run path still exists: it renders each proposal as a `BuilderPublish` claim to the
+platform's own publish chain (Repository → Repo → LocalResource → PullRequest), the same chain
+portal-builder and blueprint-builder use. **This service holds no GitHub token** and never did since
+#13. The only git credential on the platform is git-provider's, configured once at install level.
+
+**There is no repository allowlist any more.** It existed to bound a GitHub write credential this
+service no longer holds, and it blocked proposals before a human could read them. The reviewer may name
+any repository; what bounds that is the human reading the pull request. See the epitaph in
+`proposals.py`.
 
 ## Two objects, and why they are two
 
 | kind | is | lifecycle |
 |---|---|---|
-| `ReviewRun` | one nightly execution | an **event** — pruned after `retention.runDays` |
-| `Proposal` | one suggested change | a **decision record** — `Proposed → PrOpen → Merged \| Rejected \| Superseded` |
+| `ReviewRun` | one nightly execution | an **event**, pruned after `retention.runDays` |
+| `Proposal` | one suggested change | a **decision record**: `Proposed → PrOpen → Merged \| Rejected \| Superseded` |
 
 A `Proposal` carries **no `ownerReference`** to its run. That wiring looks obvious and would let the
 run's expiry garbage-collect the decision. An open proposal is never collected at all: it is an
 undecided question, and deleting those is how a review loop quietly stops mattering.
 
+Portal admins act on proposals through the `<release>-portal-admin` ClusterRole (read both kinds,
+get/patch/update `proposals/status`, never the spec). It is **bound** to the groups in
+`portalAdminAccess.groups` (default `admins`), not aggregated, because Krateo's admins hold
+cluster-admin through their group rather than the built-in `admin` ClusterRole that `aggregate-to-admin`
+feeds.
+
+## What a finding is, and how night two relates to night one
+
+- **`spec.subject`** is what a proposal is *about*: `component/signal` in lowercase kebab, e.g.
+  `installer-chart-inspector/rbac-generation-http-500`. The model chooses the target repository afresh
+  every night, so the target is a weak identity. One failure used to arrive as several unrelated
+  proposals in several repositories. The subject is normalised in code, never trusted as typed.
+- **A fingerprint** over (kind + target + normalised content) catches exact repeats. They are dropped,
+  and counted as `deduplicated`.
+- **Supersession.** A new proposal with the same kind and subject as a `Proposed` one from an earlier
+  run, or the same kind and target file with a different body, **supersedes** it. The old one gets
+  `phase: Superseded` and `status.supersededBy`. `PrOpen` proposals are not superseded by subject,
+  because a person's pull request hangs off them. Proposals with no subject (everything written before
+  the field existed) **never** match each other.
+- **`TargetResolved`** records whether `target.repo` exists, checked with an *anonymous* GitHub API
+  request, because this service holds no credential. `False/RepoNotFound` is a normal state, not a
+  rejection: the finding stands and wants re-aiming. A private repository answers 404 like a missing
+  one, and the condition message says so.
+
 ## What keeps it honest
 
-- **Evidence is required**, `minItems: 1`, and carries the **query** — so a reviewer can re-run the
-  claim and disagree. A proposal without evidence is an opinion.
-- **Confidence is capped, not trusted.** High confidence from a single observation is a defect in the
-  proposal, not a strong finding; it is downgraded to `medium` in code.
-- **Proposing nothing is a valid night.** Most nights a healthy platform deserves no changes. A
-  proposal nobody would defend costs a reviewer attention and makes them trust the next one less.
-- **A fingerprint** over (kind + target + normalised content) means night two supersedes night one
-  instead of re-proposing it.
-- **`PartiallyCompleted` is its own phase**, and no evidence at all is a `Failed` run — "no proposals"
-  from a healthy night and from a blind one look identical and mean opposite things.
+- **Evidence is required**, `minItems: 1`. The **queries** a reviewer should re-run are the ones this
+  service issued, recorded on the run under `status.evidence.clickhouse.queries`. They are not a
+  paraphrase from the model. (That field was pruned by the CRD from 0.1.14 until it was declared; a
+  test now drives a whole run and fails on any written field the CRDs would prune.)
+- **Confidence is the model's own estimate**, and the CRD says so. The old cap was arithmetic on
+  model-authored counts and never fired once (#14).
+- **One alert kind.** `observability.krateo.io/v1alpha1` `Alert` is the only alert this platform
+  evaluates, and its live spec is in the prompt. A PrometheusRule or a `monitoring.krateo.io` object is
+  refused with a note. All thirteen Alert proposals on 057 before this change were one of those two.
+- **Proposing nothing is a valid night**, and no evidence at all is a `Failed` run. "No proposals" from
+  a healthy night and from a blind one look identical and mean opposite things.
+  **`PartiallyCompleted` is its own phase** for a run where some source failed.
+- **Token usage is recorded only when the agent reports it** (`kagent_usage_metadata` on the A2A
+  stream). It is absent otherwise, never zeros. There is no model name: the response does not carry
+  one.
 
 ## Reading the platform
 
 | source | how | why that way |
 |---|---|---|
-| ClickHouse | fixed SQL from chart values | a model is never asked to author SQL against a store that has held live credentials |
-| kagent sessions | `GET /api/sessions` with a Krateo JWT | goes through kagent's API, so it **inherits per-user RBAC**; a direct Postgres read would have seen every user's conversations with no authorization model at all |
+| ClickHouse | fixed SQL from chart values, `{from}`/`{to}` bound to the window | a model is never asked to author SQL against a store that has held live credentials; an unwindowed query is refused |
+| kagent sessions | session **metadata** from kagent's Postgres, with a role granted SELECT on `session` only | reports which deployed agents are idle or never used; aggregate counts only, no user ids, no message bodies (the role is revoked on `event` and `task`) |
 | existing Alerts | Kubernetes API | so it proposes gaps rather than duplicates |
 
 The review window is bounded, and that is a safety control rather than a cost one: spans ingested
@@ -69,10 +111,15 @@ before the collector's JWT redaction landed can still carry live credentials.
 
 ## Configuration
 
-See `helm/nightly-review/values.yaml`. The two that matter are `proposalAllowlist` (deny-all until you
-name repositories) and `clickhouseQueries` (the reviewable surface — adapt them to your schema).
+See `helm/nightly-review/values.yaml`, and `values.schema.json`, whose defaults are what the installer
+applies. The values that matter: `clickhouseQueries` (the reviewable surface; adapt them to your
+schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
+`config.targetCheckApiUrl` (empty disables the existence check), and `portalAdminAccess`.
+
+Releases are cut by tag: `Chart.yaml` ships `CHART_VERSION`, and a `X.Y.Z` tag builds the image and
+publishes both charts at that version.
 
 ## Related
 
-- `alert-troubleshooter` — the same service→A2A→CR pattern this is modelled on
-- `krateo-autopilot` — the agent; read-only here, by design
+- `alert-troubleshooter`: the same service→A2A→CR pattern this is modelled on
+- `krateo-autopilot`: the orchestrator this used to ask; the dedicated reviewer replaced it

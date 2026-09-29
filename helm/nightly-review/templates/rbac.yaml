@@ -114,3 +114,42 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "nightly-review.fullname" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.portalAdminAccess.enabled }}
+---
+# WHAT THE PORTAL'S ADMINS NEED TO ACT ON A PROPOSAL. The portal opens a pull request per proposal and
+# records the decision on the Proposal itself — phase, pullRequest, decidedBy, supersededBy — and every
+# one of those is a STATUS write. So: read both kinds, and get/patch/update the proposals' status
+# subresource. Not create, not delete, and not the spec: a proposal's spec is the record of what the
+# review suggested, and nobody edits that after the fact, admin or not.
+#
+# BOUND, NOT AGGREGATED, because of how admin identity is actually wired. On 057 the portal chart binds
+# the `admins` group to cluster-admin (ClusterRoleBinding cluster-admin-binding-krateo-system), and the
+# admin user's authn record carries groups: [admins]. The `aggregate-to-admin` label only reaches the
+# built-in `admin` ClusterRole, which nothing binds to a Krateo group there — so an aggregated rule
+# would reach no portal admin, and would quietly grant this to every namespace admin instead. A direct
+# ClusterRoleBinding to the group names exactly who is meant, and it keeps working if the portal ever
+# narrows its cluster-admin binding, which is the change that would otherwise break this silently.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-portal-admin
+rules:
+  - apiGroups: ["review.krateo.io"]
+    resources: ["proposals", "reviewruns"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["review.krateo.io"]
+    resources: ["proposals/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-portal-admin
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ include "nightly-review.fullname" . }}-portal-admin }
+subjects:
+  {{- range .Values.portalAdminAccess.groups }}
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ . | quote }}
+  {{- end }}
+{{- end }}

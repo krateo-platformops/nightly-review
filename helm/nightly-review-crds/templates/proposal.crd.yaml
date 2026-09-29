@@ -28,6 +28,7 @@ spec:
         status: {}
       additionalPrinterColumns:
         - { name: Kind,       type: string, jsonPath: .spec.kind }
+        - { name: Subject,    type: string, jsonPath: .spec.subject }
         - { name: Phase,      type: string, jsonPath: .status.phase }
         - { name: Confidence, type: string, jsonPath: .spec.confidence }
         - { name: PR,         type: string, jsonPath: .status.pullRequest.url }
@@ -45,6 +46,18 @@ spec:
                   type: string
                   enum: [Alert, Widget, Prompt, Policy, Documentation]
                   description: What is being proposed. Each maps to a different target repository.
+                subject:
+                  type: string
+                  maxLength: 160
+                  description: >-
+                    WHAT THE FINDING IS ABOUT, as `component/signal` in lowercase kebab — e.g.
+                    installer-chart-inspector/rbac-generation-http-500. Stable across nights where the
+                    target is not: the model re-chooses the repository every night, so one failure used
+                    to arrive as several unrelated proposals. A new proposal whose kind and subject match
+                    a Proposed one from an EARLIER run supersedes it (status.supersededBy). Normalised by
+                    the service, never trusted as typed. OPTIONAL because proposals written before
+                    0.1.21 have none, and an absent subject NEVER matches another absent one — otherwise
+                    the first night after the upgrade would retire every legacy proposal of each kind.
                 title:     { type: string, maxLength: 200 }
                 rationale:
                   type: string
@@ -156,7 +169,10 @@ spec:
                 reason:    { type: string }
                 supersededBy:
                   type: string
-                  description: Name of the Proposal that replaced this one.
+                  description: >-
+                    Name of the Proposal that replaced this one — written with phase Superseded when a
+                    later run proposed a different change for the same finding (kind + subject) or the
+                    same file (kind + target). Declared from the start and first written in 0.1.21.
                 expiresAt:
                   type: string
                   format: date-time
@@ -169,6 +185,12 @@ spec:
                 error: { type: string }
                 conditions:
                   type: array
+                  description: >-
+                    TargetResolved is written on every proposal the service records: True/RepoFound,
+                    False/RepoNotFound (GitHub answered 404 to an ANONYMOUS request — the repository is
+                    missing or private, and the check cannot tell which), False/InvalidRepo (not an
+                    owner/name), or Unknown/CheckFailed|CheckDisabled (the question was not answered).
+                    False is a normal state, not a rejection: the finding stands and wants re-aiming.
                   items:
                     type: object
                     required: [type, status]
