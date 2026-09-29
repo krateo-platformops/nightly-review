@@ -40,14 +40,20 @@ SECRET_PATTERNS = [
     (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), "<REDACTED-GOOGLE-API-KEY>"),
     # user:pass@host in a URL — the password is the part that matters, so the host is left readable.
     (re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+):[^\s/@]+@"), r"\1:<REDACTED>@"),
-    (re.compile(r"(?i)\b(api[_\-]?key|client[_\-]?secret|access[_\-]?token|password|passwd)"
-                r"\s*[=:]\s*[\"\']?([A-Za-z0-9._\-]{8,})[\"\']?"), r"\1=<REDACTED>"),
+    # THE KEY MAY BE PART OF A LONGER NAME. The pattern used to open with `\b(password|…)`, and `\b` does
+    # not fire between `_` and a letter or inside PGPASSWORD — so DB_PASSWORD=, PGPASSWORD=,
+    # MY_API_KEY= and CLICKHOUSE_PASSWORD= all passed untouched (found on 057, 2026-09-29, where
+    # KAGENT_DB_PASSWORD holds admin's password and tool output is where an `env` dump lands). Any
+    # identifier CONTAINING a key word now matches, and the value runs to whitespace or a quote, so a
+    # password with punctuation is not redacted halfway.
+    (re.compile(r"(?i)\b([A-Za-z0-9_\-]*?(?:api[_\-]?key|client[_\-]?secret|access[_\-]?token|password|passwd)[A-Za-z0-9_\-]*)"
+                r"\s*[=:]\s*[\"\']?([^\s\"\',;]{8,})[\"\']?"), r"\1=<REDACTED>"),
     # THE SAME KEYS, JSON-QUOTED. The pattern above needs the colon right after the key, and in JSON a
     # quote sits between them — so `"password": "hunter2hunter2"` passed through untouched. That shape
     # was rare while only people's questions were read; tool ARGUMENTS are rendered as JSON, and the
     # agent-analysis stage reads every one of them. `token` is here bare as well, because tool arguments
     # carry it bare; `secret` is not, because in Kubernetes JSON it is far more often a Secret's NAME.
-    (re.compile(r"(?i)\"(api[_\-]?key|client[_\-]?secret|access[_\-]?token|refresh[_\-]?token|token|password|passwd)\""
+    (re.compile(r"(?i)\"([A-Za-z0-9_\-]*?(?:api[_\-]?key|client[_\-]?secret|access[_\-]?token|refresh[_\-]?token|token|password|passwd)[A-Za-z0-9_\-]*)\""
                 r"\s*:\s*\"[^\"\\]{8,}\""), r'"\1": "<REDACTED>"'),
     # AND IN PROSE. People type "my password is X" to an agent, and agents answer "the password is X";
     # neither has a colon, so both passed. Found by the agent-analysis end-to-end run, where a planted
