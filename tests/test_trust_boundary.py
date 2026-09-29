@@ -68,19 +68,38 @@ def test_redaction_reaches_every_field_of_a_real_proposal():
 
 
 # --- confidence --------------------------------------------------------------------------------
-def test_high_confidence_from_a_single_observation_is_capped():
-    """alert-troubleshooter#30 encoded as code: confidence describes the evidence, not enthusiasm."""
+# These two replace test_high_confidence_from_a_single_observation_is_capped, which asserted a cap that
+# #14 removed. They assert the OPPOSITE invariant on purpose: confidence now passes through untouched,
+# because the service does not verify it and must not appear to. If someone reintroduces a cap derived
+# from model-authored fields, these fail and point at #14.
+def test_confidence_passes_through_untouched_even_on_one_observation():
+    """#14: the cap was arithmetic on the model's own observedCount, so it tested nothing."""
     kept, notes = P.validate_batch(
         {"proposals": [_p(confidence="high",
                           evidence=[{"source": "kagent-sessions", "summary": "once", "observedCount": 1}])]},
         NOOP)
-    assert kept[0]["confidence"] == "medium"
-    assert any("capped to medium" in n for n in notes)
-
-
-def test_high_confidence_with_real_support_survives():
-    kept, _ = P.validate_batch({"proposals": [_p(confidence="high")]}, NOOP)
     assert kept[0]["confidence"] == "high"
+    assert not any("capped" in n for n in notes)
+
+
+def test_a_fabricated_observedcount_cannot_be_what_earns_high():
+    """The exact shape that defeated the old cap: one evidence item asserting a huge count.
+
+    It kept `high` under the cap too — that is the point. The cap's `observed < 2` clause was cleared by
+    any number the model chose to write, and on the first nine real proposals from 057 the four
+    single-evidence ones all carried four-figure counts. Asserting it here keeps the reason the check
+    was removed legible, so nobody restores it believing it discriminated."""
+    kept, notes = P.validate_batch(
+        {"proposals": [_p(confidence="high",
+                          evidence=[{"source": "clickhouse", "summary": "s", "observedCount": 900}])]},
+        NOOP)
+    assert kept[0]["confidence"] == "high"
+    assert not any("capped" in n for n in notes)
+
+
+# The CONTRACT is untouched by #14: an out-of-enum confidence is still rejected per-item. That is
+# already asserted by test_a_bad_item_is_dropped_and_its_siblings_survive, which uses
+# confidence="very high" as its bad item — not duplicated here.
 
 
 # --- fingerprint -------------------------------------------------------------------------------

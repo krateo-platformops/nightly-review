@@ -189,13 +189,23 @@ def validate_batch(payload, schema_check, item_check=None):
         if fired:
             notes.append(f"proposal[{i}] contained {fired} secret-shaped string(s); redacted before storage")
 
-        # Confidence must be earned by the evidence, not asserted beside it (alert-troubleshooter#30).
-        observed = sum(e.get("observedCount") or 0 for e in clean.get("evidence") or [])
-        if clean["confidence"] == "high" and len(clean["evidence"]) < 2 and observed < 2:
-            clean["confidence"] = "medium"
-            notes.append(
-                f"proposal[{i}] claimed high confidence from a single observation; capped to medium"
-            )
+        # NO CONFIDENCE CAP, DELIBERATELY (#14). There used to be one here: high was demoted to medium
+        # unless the proposal carried two evidence items or a summed observedCount of two or more. It
+        # read as evidence verification and was arithmetic on the model's own claims — observedCount is
+        # model-authored and unbounded, so a single fabricated item claiming 900 satisfied it. Measured
+        # on the nine real proposals from 057: four carried exactly one evidence item, so the length
+        # clause caught all four, and all four kept high because the model's own counts (636, 612,
+        # 8459, 4403) cleared the threshold. The cap never once changed an outcome, and a check that
+        # cannot fail is worse than no check, because it is read as one.
+        #
+        # So `confidence` is the MODEL's self-report and the CRD now says so. The service cannot do
+        # better here: it knows the corpus it gathered, not which rows support proposal 3, and a
+        # confidence derived from corpus-level facts would be identical for every proposal in a run —
+        # a run-level quality score wearing a per-proposal label, which is a subtler lie than this one.
+        # Earning the field back needs the model to CITE rather than assert: evidence items naming one
+        # of the service's own query names, validated against a per-run enum of the queries that
+        # actually ran (see prompt.py — the same move that removed evidence[].query). The grounded
+        # per-proposal prior is the merge/reject history, which is #21.
 
         clean["fingerprint"] = fingerprint(clean)
         kept.append(clean)
