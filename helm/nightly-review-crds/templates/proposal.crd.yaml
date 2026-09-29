@@ -187,7 +187,7 @@ spec:
                   type: array
                   description: >-
                     TargetResolved is written on every proposal the service records: True/RepoFound,
-                    False/RepoNotFound (GitHub answered 404 to an ANONYMOUS request — the repository is
+                    False/NotFoundOrPrivate (GitHub answered 404 to an ANONYMOUS request — the repository is
                     missing or private, and the check cannot tell which), False/InvalidRepo (not an
                     owner/name), or Unknown/CheckFailed|CheckDisabled (the question was not answered).
                     False is a normal state, not a rejection: the finding stands and wants re-aiming.
