@@ -21,6 +21,12 @@ CLICKHOUSE_URL = os.environ.get("CLICKHOUSE_URL", "")
 CLICKHOUSE_USER = os.environ.get("CLICKHOUSE_USER", "")
 CLICKHOUSE_PASSWORD = os.environ.get("CLICKHOUSE_PASSWORD", "")
 KAGENT_API = os.environ.get("KAGENT_API_URL", "http://kagent-controller.krateo-system.svc:8083")
+# kagent's Postgres, read with a role granted SELECT on `session` AND NOTHING ELSE. See kagent_sessions.
+KAGENT_DB_HOST = os.environ.get("KAGENT_DB_HOST", "kagent-postgresql.krateo-system.svc")
+KAGENT_DB_PORT = int(os.environ.get("KAGENT_DB_PORT", "5432"))
+KAGENT_DB_NAME = os.environ.get("KAGENT_DB_NAME", "kagent")
+KAGENT_DB_USER = os.environ.get("KAGENT_DB_USER", "")
+KAGENT_DB_PASSWORD = os.environ.get("KAGENT_DB_PASSWORD", "")
 MAX_ROWS = int(os.environ.get("EVIDENCE_MAX_ROWS", "200"))
 MAX_CHARS = int(os.environ.get("EVIDENCE_MAX_CHARS", "60000"))
 
@@ -119,70 +125,98 @@ def clickhouse(queries, window):
     return _cap(redact("\n\n".join(blocks)), stats), stats
 
 
-def kagent_sessions(token, limit=50):
-    """Read sessions through kagent's own API rather than its Postgres.
+# THE ONLY QUERY THIS SERVICE MAKES AGAINST kagent. Hoisted so it can be read and tested on its own.
+# Three properties are load-bearing and each is asserted by a test:
+#   - `deleted_at IS NULL`, because kagent soft-deletes and without it this returns sessions users
+#     deleted, which their own API would never show them;
+#   - count(DISTINCT user_id) and NEVER user_id itself, because this corpus reaches a model and from
+#     there a pull request body, and aggregate counts answer the question without naming real people;
+#   - `session` and no other table, so it does not even ask for the content tables the role is revoked on.
+SESSION_SQL = """
+    SELECT coalesce(agent_id, '(none)')              AS agent,
+           count(*)                                  AS sessions,
+           count(DISTINCT user_id)                    AS users,
+           count(*) FILTER (WHERE created_at >= :frm) AS created_in_window,
+           max(updated_at)                            AS latest
+      FROM session
+     WHERE deleted_at IS NULL
+       AND updated_at >= :frm AND updated_at <= :to
+     GROUP BY coalesce(agent_id, '(none)')
+     ORDER BY sessions DESC
+     LIMIT :lim
+"""
 
-    Going through the API inherits the per-user RBAC that is already live on this platform; a direct
-    database read would have had none, and would have seen every user's conversations regardless of
-    who was asking. The API path is both less to build and less to be trusted with."""
-    if not token:
-        return None, {"ok": False, "error": "no service JWT; kagent API requires an identity"}
-    headers = {"Authorization": f"Bearer {token}"}
+
+def kagent_sessions(window, limit=200):
+    """Session METADATA for every user, read from kagent's Postgres — not from its HTTP API.
+
+    WHY NOT THE API, WHICH IS WHAT THIS USED TO DO. kagent 0.10.x scopes /api/sessions to the calling
+    principal and offers no way to widen it: HandleListSessions takes the user id from the JWT and
+    passes it straight to ListSessions, consulting no authorizer, so there is no flag and no permission
+    that could open it. This service therefore saw only sessions it owns, and it owns none — its own A2A
+    traffic is filed under synthetic A2A_USER_<contextId> identities, not under `nightly-review`. The
+    controller's own log for the 02:00 run read `userID: nightly-review, count: 0` while 3,223 sessions
+    existed. The source reported `empty` with a note every night, for a reason that was never going to
+    change on this version. Upstream has since added all_creators behind a SessionAllCreators
+    authorization, but it is unreleased and arrives with the REST route removed, so it is not a bump.
+
+    WHY THIS CANNOT READ A CONVERSATION. `session` holds id, user_id, name, created_at, updated_at,
+    deleted_at, agent_id, source — no message bodies. Content lives in `event.data` and in `task`. The
+    role this connects with is granted SELECT on `session` alone and is explicitly REVOKEd on event and
+    task, verified live: session=t, event=f, task=f, feedback=f. So the boundary is a privilege the role
+    does not hold, not a promise this function makes. A later edit that asked for content would get a
+    permission error rather than the content.
+
+    WHY IT EMITS COUNTS AND NEVER user_id VALUES. This corpus goes to a model and from there into pull
+    request bodies. Aggregate counts answer what a review needs — which agents are used, how broadly,
+    how much churn — without putting real people's identities into a proposal. `count(DISTINCT user_id)`
+    is the signal; the ids themselves are not.
+
+    It reads across all users by design, which is a deliberate departure from the per-user RBAC the rest
+    of this platform enforces. That is recorded here, in the ReviewRun's `scope`, and in the CRD, so it
+    cannot be discovered later as a surprise.
+    """
+    if not (KAGENT_DB_USER and KAGENT_DB_PASSWORD):
+        return None, {"ok": False, "error": "kagent DB credentials not configured (KAGENT_DB_USER/PASSWORD)"}
     try:
-        r = requests.get(f"{KAGENT_API}/api/sessions", headers=headers, timeout=60)
-        if r.status_code == 401:
-            return None, {"ok": False, "error": "401 from kagent /api/sessions (identity rejected)"}
-        r.raise_for_status()
-        payload = r.json()
+        import pg8000.native                                  # pure-python: no libpq in the image
     except Exception as exc:                                  # noqa: BLE001
-        return None, {"ok": False, "error": f"/api/sessions: {exc}"}
+        return None, {"ok": False, "error": f"pg8000 unavailable: {exc}"}
 
-    # ZERO SESSIONS HAS THREE DIFFERENT CAUSES AND THEY ARE NOT INTERCHANGEABLE: no conversations
-    # happened in the window; this service identity is only shown its OWN sessions and it creates none;
-    # or the list is nested under a key we did not look under. The first run reported `returned: 0` for
-    # all three, so the review silently proceeded without the conversations it exists to read. Report
-    # WHICH, on the run, rather than a number that cannot be interpreted.
-    shape = "list" if isinstance(payload, list) else f"dict{sorted(payload.keys())}" if isinstance(payload, dict) else type(payload).__name__
-    sessions = payload if isinstance(payload, list) else None
-    if sessions is None and isinstance(payload, dict):
-        for key in ("sessions", "data", "items", "results"):
-            candidate = payload.get(key)
-            if isinstance(candidate, list):
-                sessions = candidate
-                break
-            if isinstance(candidate, dict):                    # one level of nesting, e.g. {"data": {"sessions": []}}
-                for inner in ("sessions", "items", "results"):
-                    if isinstance(candidate.get(inner), list):
-                        sessions = candidate[inner]
-                        break
-            if sessions is not None:
-                break
-    if sessions is None:
-        # kagent OMITS `data` on a successful empty list: /api/sessions answers
-        # {"error":false,"message":"Successfully listed sessions"} with no list at all, while /api/agents
-        # returns {"error":false,"data":[…]}. Verified against the live API. So error:false + no list is
-        # EMPTY, not malformed — calling it malformed was my own misreading in 0.1.2.
-        if isinstance(payload, dict) and payload.get("error") in (False, None):
-            sessions = []
-        else:
-            return None, {"ok": False, "error": f"no session list found in response ({shape})", "shape": shape}
+    conn = None
+    try:
+        conn = pg8000.native.Connection(
+            user=KAGENT_DB_USER, password=KAGENT_DB_PASSWORD, host=KAGENT_DB_HOST,
+            port=KAGENT_DB_PORT, database=KAGENT_DB_NAME, timeout=30,
+        )
+        rows = conn.run(SESSION_SQL, frm=window["from"], to=window["to"], lim=limit)
+    except Exception as exc:                                  # noqa: BLE001
+        # Never let the exception text through unredacted: a DSN or password can appear in a driver error.
+        return None, {"ok": False, "error": redact(f"session query: {exc}")[:300]}
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass                            # noqa: BLE001,S110
 
-    lines, read = [], 0
-    for s in sessions[:limit]:
-        sid = s.get("id") or s.get("name") or ""
-        lines.append(f"- session {sid} agent={s.get('agent_ref') or s.get('agentRef') or '?'} "
-                     f"updated={s.get('updated_at') or s.get('updatedAt') or '?'}")
-        read += 1
+    if not rows:
+        # Genuinely empty now MEANS something — no sessions touched in the window — because the source
+        # can see every user's. Unlike the API version, this emptiness is information.
+        return None, {"ok": True, "queried": 1, "returned": 0, "empty": True,
+                      "note": "no kagent sessions were created or updated in the review window; this "
+                              "source reads across all users, so an empty result means no activity, "
+                              "not a scoping artefact",
+                      "scope": "all-users metadata (SELECT on session only; cannot read event/task)"}
 
-    meta = {"ok": True, "queried": 1, "returned": read, "shape": shape}
-    if read == 0:
-        # A degraded run, not a clean one. The agent is told, and the run says so, so "no proposals
-        # tonight" cannot be mistaken for "nothing worth proposing in the conversations".
-        meta["empty"] = True
-        meta["note"] = ("kagent returned an empty session list for this service identity; sessions may be "
-                        "scoped per caller (A2A sessions are created under A2A_USER_<contextId>)")
-        return None, meta
-    return _cap(redact("\n".join(lines))), meta
+    lines = [f"- agent {r[0]}: {r[1]} sessions, {r[2]} distinct users, "
+             f"{r[3]} created in window, last activity {r[4]}" for r in rows]
+    total_s = sum(r[1] for r in rows)
+    total_new = sum(r[3] for r in rows)
+    lines.insert(0, f"- TOTAL: {total_s} sessions across {len(rows)} agents, {total_new} created in window")
+    return _cap(redact("\n".join(lines))), {
+        "ok": True, "queried": 1, "returned": len(rows), "sessions": total_s,
+        "createdInWindow": total_new,
+        "scope": "all-users metadata (SELECT on session only; cannot read event/task)",
+    }
 
 
 def kubernetes(api):

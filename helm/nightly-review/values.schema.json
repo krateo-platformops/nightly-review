@@ -85,6 +85,16 @@
         "a2aReadTimeoutSeconds": {
           "type": "integer",
           "minimum": 1
+        },
+        "kagentDbHost": {
+          "type": "string",
+          "description": "In-cluster address of kagent's Postgres. Reached directly and never through the gateway, because this is a database connection rather than an API call that per-user RBAC could be applied to."
+        },
+        "kagentDbPort": {
+          "type": "integer"
+        },
+        "kagentDbName": {
+          "type": "string"
         }
       }
     },
@@ -95,6 +105,22 @@
         "clickhouse": {
           "type": "object",
           "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "userKey": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string"
+            }
+          }
+        },
+        "kagentDb": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Credential for kagent's Postgres, read for session METADATA across every user. The role named here must hold SELECT on `session` and nothing else: conversation content lives in event.data and task, and the role is explicitly REVOKEd on both. That narrowness is a database privilege, NOT something this chart enforces \u2014 verify it where the role is created (session=t, event=f, task=f). No `default` on any leaf here, deliberately: an empty name must mean not-configured so the source reports it and the run is PartiallyCompleted, rather than a default silently standing in.",
           "properties": {
             "name": {
               "type": "string"

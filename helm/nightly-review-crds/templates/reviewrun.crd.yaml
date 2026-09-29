@@ -88,6 +88,22 @@ spec:
                       ok:        { type: boolean }
                       queried:   { type: integer }
                       returned:  { type: integer }
+                      sessions:  { type: integer }
+                      createdInWindow: { type: integer }
+                      scope:
+                        type: string
+                        description: >-
+                          WHAT THIS SOURCE WAS ALLOWED TO SEE, in words, when that is not the obvious
+                          thing. Written by kagent-sessions, which reads session METADATA for EVERY user
+                          out of kagent's Postgres — a deliberate departure from the per-user RBAC the
+                          rest of this platform enforces, and therefore something the record must state
+                          rather than leave to be discovered. It reads the `session` table only; message
+                          bodies live in event.data and task, and the database role is revoked on both,
+                          so the limit is a privilege the role does not hold rather than a promise the
+                          code makes. Declared here because this schema is structural: an undeclared
+                          field is pruned on write, and the run would then claim a scope it never
+                          recorded — the same silent-pruning bug that hid the truncation fields in
+                          0.1.14.
                       error:     { type: string }
                       empty:
                         type: boolean

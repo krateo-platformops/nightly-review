@@ -50,6 +50,11 @@ config:
                                # keep working. Asking an ORCHESTRATOR to review is what this release
                                # stops doing; see templates/agent.yaml.
   kagentApiUrl: http://kagent-controller.krateo-system.svc:8083
+  # Reached in-cluster; never through the gateway, because this is a database connection and not an
+  # API call that per-user RBAC could be applied to.
+  kagentDbHost: kagent-postgresql.krateo-system.svc
+  kagentDbPort: 5432
+  kagentDbName: kagent
   clickhouseUrl: ""
   evidenceMaxChars: 60000
   # TWO CLOCKS. a2aTimeoutSeconds is the TOTAL budget for one question and bounds the run; the read
@@ -66,6 +71,16 @@ secrets:
   # only asks, by creating a BuilderPublish claim.
   clickhouse: { name: "", userKey: username, passwordKey: password }
 
+  # kagent's Postgres, read for session METADATA across every user. The role named here is expected to
+  # hold SELECT on `session` and nothing else: conversation content lives in event.data and task, and the
+  # role is explicitly REVOKEd on both. That narrowness is a database privilege, not something this chart
+  # can enforce — verify it where the role is created (session=t, event=f, task=f) rather than trusting
+  # these keys. Empty name => the source reports not-configured and the run is PartiallyCompleted, which
+  # is the honest state rather than a silent skip.
+  kagentDb:
+    name: ""
+    userKey: username
+    passwordKey: password
 resources:
   requests: { cpu: 100m, memory: 256Mi }
   limits:   { memory: 1Gi }

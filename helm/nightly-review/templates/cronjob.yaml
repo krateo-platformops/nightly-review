@@ -71,6 +71,25 @@ spec:
                   valueFrom:
                     secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.clickhouse.passwordKey }} }
                 {{- end }}
+                {{- /* kagent's Postgres, for session METADATA across all users. The credential is
+                       expected to be a role granted SELECT on `session` and nothing else — content
+                       lives in event.data and task, which that role is revoked on. The narrowness is
+                       enforced by the grant, not by this chart, so it must be verified where the role
+                       is created (session=t, event=f, task=f) and not assumed from these keys. */}}
+                - name: KAGENT_DB_HOST
+                  value: {{ .Values.config.kagentDbHost | quote }}
+                - name: KAGENT_DB_PORT
+                  value: {{ .Values.config.kagentDbPort | quote }}
+                - name: KAGENT_DB_NAME
+                  value: {{ .Values.config.kagentDbName | quote }}
+                {{- with .Values.secrets.kagentDb.name }}
+                - name: KAGENT_DB_USER
+                  valueFrom:
+                    secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.kagentDb.userKey }} }
+                - name: KAGENT_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.kagentDb.passwordKey }} }
+                {{- end }}
               volumeMounts:
                 {{- if .Values.config.authnUrl }}
                 - name: authn-token

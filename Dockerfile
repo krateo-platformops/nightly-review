@@ -2,11 +2,15 @@ FROM python:3.12-slim
 WORKDIR /app
 # Pinned, and deliberately few. This image assembles a corpus and hands it to a model; every extra
 # dependency is more code with access to that corpus before it is redacted.
+# pg8000 rather than psycopg: it is pure Python, so it needs no libpq and no build stage, and it
+# is a far smaller surface for the one read-only query this service makes. That reasoning is the
+# line above applied, not an exception to it.
 RUN pip install --no-cache-dir \
       requests==2.32.3 \
       jsonschema==4.23.0 \
       kubernetes==31.0.0 \
-      PyYAML==6.0.2
+      PyYAML==6.0.2 \
+      pg8000==1.31.2
 COPY *.py .
 USER 65532:65532
 # Runs once and exits. The schedule lives in the CronJob, not in a loop inside the process, so a run
