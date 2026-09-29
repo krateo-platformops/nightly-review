@@ -157,8 +157,8 @@ def _pr_body(proposal, run_name, queries_run=None):
 
 ---
 
-Confidence describes the evidence above, not the reviewer's enthusiasm: a proposal resting on a single
-observation is capped to `medium` before it reaches you. If the evidence does not persuade you, the
+Confidence is the reviewing model's own judgement of the evidence above, and nothing checks it. If
+the evidence does not persuade you, the
 right outcome is to close this — a rejected proposal is a working loop, not a failed one.
 
 Produced by `ReviewRun/{run_name}` · tracked as `Proposal` in `{NAMESPACE}`.
@@ -251,12 +251,13 @@ def open_index(api, run_name=None):
     file?" — and by subject "have we said something else about this same FINDING?". Both of those are
     replacements, which supersede. Returning only the first is why every re-worded repeat looked new.
 
-    BY SUBJECT IS NARROWER THAN THE OTHER TWO, deliberately:
-    - PROPOSED ONLY, not PrOpen. The portal opens pull requests per proposal; a proposal in PrOpen has a
-      human's pull request hanging off it, and retiring it from under that PR on the strength of a
-      model's re-wording would orphan work somebody is doing. The target index keeps its older, wider
-      reach because a same-file replacement is a replacement of the very change that PR carries.
-    - EARLIER RUNS ONLY. Two proposals in one run sharing a subject are the model splitting one finding
+    THE TWO REPLACEMENT INDEXES ARE NARROWER THAN THE FINGERPRINT ONE, deliberately:
+    - PROPOSED ONLY, not PrOpen — for target AND subject. The portal opens pull requests per proposal; a
+      proposal in PrOpen has a person's pull request hanging off it, and retiring it on the strength of
+      a model's next opinion would orphan work somebody is doing. That holds for a same-file replacement
+      too: the PR is where that file's change is now being decided, and a newer body lands beside it as
+      a new proposal for the person to weigh, not as a silent retirement of the one they acted on.
+    - EARLIER RUNS ONLY (subject).  Two proposals in one run sharing a subject are the model splitting one finding
       across two changes, not tonight replacing last night.
     - NEVER A NULL SUBJECT. Legacy proposals carry none; see proposals.subject_key."""
     got = api.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals").get("items", [])
@@ -270,7 +271,8 @@ def open_index(api, run_name=None):
         if not fp or not spec.get("kind"):
             continue
         by_fingerprint[fp] = name
-        by_target[proposals.target_key(spec)] = {"fingerprint": fp, "name": name}
+        if phase == PHASE_PROPOSED:
+            by_target[proposals.target_key(spec)] = {"fingerprint": fp, "name": name}
         key = proposals.subject_key(spec)
         if (key is not None and phase == PHASE_PROPOSED
                 and (spec.get("producedBy") or {}).get("runRef") != run_name):

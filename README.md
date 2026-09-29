@@ -76,7 +76,7 @@ feeds.
   because a person's pull request hangs off them. Proposals with no subject (everything written before
   the field existed) **never** match each other.
 - **`TargetResolved`** records whether `target.repo` exists, checked with an *anonymous* GitHub API
-  request, because this service holds no credential. `False/RepoNotFound` is a normal state, not a
+  request, because this service holds no credential. `False/NotFoundOrPrivate` (no public repo by that name — missing, or private) is a normal state, not a
   rejection: the finding stands and wants re-aiming. A private repository answers 404 like a missing
   one, and the condition message says so.
 

@@ -20,7 +20,7 @@ Secrets can put one in a prompt — and would put back the very credential #13 r
 
 What that costs, stated rather than discovered: GitHub answers 404 for a PRIVATE repository to an
 anonymous caller, exactly as for a missing one. Eight krateo-platformops repositories are private
-today. A proposal aimed at one reads RepoNotFound, and the condition message says the check cannot
+today. A proposal aimed at one reads NotFoundOrPrivate — named for exactly that — and the message says the check cannot
 tell the two apart — so the False is honest about its own limit rather than a flat claim.
 
 Rate limit: 60 unauthenticated requests an hour per egress IP. A run writes at most twelve proposals
@@ -53,7 +53,7 @@ def _cond(status, reason, message):
 def resolve(repo, cache=None):
     """The TargetResolved condition for `owner/name` (lastTransitionTime is the writer's to add).
 
-    True/RepoFound, False/RepoNotFound, False/InvalidRepo, or Unknown with CheckFailed/CheckDisabled —
+    True/RepoFound, False/NotFoundOrPrivate, False/InvalidRepo, or Unknown with CheckFailed/CheckDisabled —
     Unknown is not a softer False: it means this run could not ask, and says why."""
     if cache is not None and repo in cache:
         return cache[repo]
@@ -80,9 +80,13 @@ def _resolve(repo):
     if r.status_code == 200:
         return _cond("True", "RepoFound", f"{owner}/{name} exists")
     if r.status_code == 404:
-        return _cond("False", "RepoNotFound",
-                     f"{owner}/{name} answered 404 to an anonymous request. It does not exist, or it is "
-                     f"private — the check holds no credential and cannot tell those apart.")
+        # NOT "RepoNotFound": krateo-agentiko/krateo-autopilot and incident-agent are private and are
+        # exactly where a Prompt proposal belongs. A reason that read "not found" would tell a reviewer the
+        # model invented a repository it got right. The reason names both possibilities, so a UI can show
+        # "unverified" rather than "wrong".
+        return _cond("False", "NotFoundOrPrivate",
+                     f"No public repository {owner}/{name}. It does not exist, or it is private — an anonymous "
+                     f"check cannot tell those apart.")
     # 403 and 429 are the rate limit; anything else is GitHub having a bad night. Neither says anything
     # about the repository, so neither may be recorded as if it did.
     return _cond("Unknown", "CheckFailed", f"HEAD {url} answered {r.status_code}")

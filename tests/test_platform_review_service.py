@@ -157,6 +157,26 @@ def test_only_a_proposed_one_is_superseded_by_subject(phase):
     assert publish.open_index(api, "rr-new")[2] == {}
 
 
+def test_a_proposal_with_an_open_pr_is_never_superseded_by_target_either():
+    """The same file with a new body used to retire a PrOpen proposal from under its pull request. The
+    target index is Proposed-only now, like the subject one: the newer body lands beside it as new."""
+    stored = _stored("p-pr", phase="PrOpen", repo="org/old")
+    api = _Api([stored])
+    by_fp, by_target, by_subject = publish.open_index(api, "rr-new")
+    assert by_target == {}
+    same_file = _prop(subject=None)
+    same_file["target"] = dict(stored["spec"]["target"])
+    assert P.classify(same_file, by_fp, by_target, by_subject) == ("new", None)
+
+
+def test_a_proposed_one_is_still_superseded_by_target():
+    stored = _stored("p-old", repo="org/old")
+    api = _Api([stored])
+    same_file = _prop(subject=None)
+    same_file["target"] = dict(stored["spec"]["target"])
+    assert P.classify(same_file, *publish.open_index(api, "rr-new")) == ("supersede", ["p-old"])
+
+
 def test_a_proposal_from_the_same_run_is_not_superseded_by_subject():
     api = _Api([_stored("p-sibling", subject="snowplow/sar-unauthorized", run="rr-new")])
     assert publish.open_index(api, "rr-new")[2] == {}
@@ -263,7 +283,7 @@ def _head(code, calls=None):
 
 
 @pytest.mark.parametrize("code,status,reason", [
-    (200, "True", "RepoFound"), (404, "False", "RepoNotFound"),
+    (200, "True", "RepoFound"), (404, "False", "NotFoundOrPrivate"),
     (403, "Unknown", "CheckFailed"), (429, "Unknown", "CheckFailed"), (502, "Unknown", "CheckFailed"),
 ])
 def test_the_condition_says_what_github_answered_and_no_more(monkeypatch, code, status, reason):
@@ -453,7 +473,7 @@ def test_a_missing_repo_is_recorded_and_written_but_gets_no_claim(full_run):
     doc = next(b for b in by_name.values() if b["spec"]["kind"] == "Documentation")
     st = full_run.proposals[doc["metadata"]["name"]]["status"]
     (cond,) = [c for c in st["conditions"] if c["type"] == "TargetResolved"]
-    assert (cond["status"], cond["reason"]) == ("False", "RepoNotFound")
+    assert (cond["status"], cond["reason"]) == ("False", "NotFoundOrPrivate")
     claims = [b for plural, b in full_run.creates if plural == "builderpublishes"]
     assert [c["spec"]["target"]["repo"] for c in claims] == ["snowplow"]
 
