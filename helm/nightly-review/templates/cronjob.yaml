@@ -17,9 +17,15 @@ spec:
     spec:
       backoffLimit: 0   # a failed run is recorded on the ReviewRun and waits for tomorrow; retrying a
                         # half-finished review would re-spend a model call to reach the same verdict
+      # A RUN THAT DEPENDS ON EXTERNAL MODEL CALLS MUST HAVE AN END. The analyse stage adds up to
+      # config.agentAnalysis.totalSeconds on top of the gather and the main ask. Without a deadline, a hung
+      # call holds the night's slot forever, and concurrencyPolicy: Forbid then skips every later night.
+      # On the deadline the pod gets SIGTERM; main.py records the run as Failed within the grace period.
+      activeDeadlineSeconds: {{ .Values.jobDeadlineSeconds }}
       template:
         spec:
           restartPolicy: Never
+          terminationGracePeriodSeconds: 60
           serviceAccountName: {{ include "nightly-review.fullname" . }}
           containers:
             - name: review

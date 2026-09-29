@@ -16,6 +16,9 @@ windowHours: 24                # BOUNDED: spans older than the collector's JWT r
                                # carry live credentials, so the window is a safety control, not a cost one
 dryRun: true                   # produce Proposals, open NO pull requests
 suspend: false
+# The whole Job, every stage included. Must exceed config.agentAnalysis.totalSeconds plus the gather
+# and the main ask; on expiry the run is recorded Failed (SIGTERM), never left Running.
+jobDeadlineSeconds: 3600
 
 image:
   repository: ghcr.io/krateo-platformops/nightly-review
