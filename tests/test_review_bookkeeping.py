@@ -328,3 +328,41 @@ def test_the_contract_no_longer_asks_the_model_for_a_query():
     assert ev["additionalProperties"] is False, "without this the model could add it back anyway"
     msg = PR.build_user_message({"from": "a", "to": "b"}, {"clickhouse": "rows"})
     assert "Carry the query that produced it" not in msg
+
+
+# --- kagent sessions from Postgres ------------------------------------------------------------------
+# The API implementation this replaced could only ever return the caller's own sessions, of which this
+# service has none, so it reported `empty` with a note every night. These assert the properties that
+# make the replacement safe, not that it returns rows — which needs a database.
+def test_kagent_sessions_refuses_without_credentials():
+    """Not-configured is an ERROR, not a quiet skip: it must show up as degradation on the run."""
+    import importlib, evidence
+    importlib.reload(evidence)
+    evidence.KAGENT_DB_USER = ""
+    evidence.KAGENT_DB_PASSWORD = ""
+    body, stats = evidence.kagent_sessions({"from": "2026-01-01 00:00:00", "to": "2026-01-02 00:00:00"})
+    assert body is None
+    assert stats["ok"] is False and "not configured" in stats["error"]
+
+
+def test_kagent_sessions_never_emits_user_ids():
+    """The corpus reaches a model and then a pull request body, so identities must not be in it.
+
+    Asserted against the SQL rather than a result set: the query selects count(DISTINCT user_id) and
+    must never select user_id itself. If someone adds it for 'a bit more context', this fails."""
+    from evidence import SESSION_SQL
+    assert "count(DISTINCT user_id)" in SESSION_SQL
+    assert "user_id" not in SESSION_SQL.replace("count(DISTINCT user_id)", "")
+
+
+def test_kagent_sessions_query_excludes_soft_deleted():
+    """kagent soft-deletes. Without this the source returns sessions users deleted."""
+    from evidence import SESSION_SQL
+    assert "deleted_at IS NULL" in SESSION_SQL
+
+
+def test_kagent_sessions_query_reads_only_the_session_table():
+    """The grant is the real enforcement, but the query must not even ask for content tables."""
+    from evidence import SESSION_SQL as sql
+    for forbidden in ("event", "task", "feedback", "lg_checkpoint"):
+        assert f"FROM {forbidden}" not in sql and f"JOIN {forbidden}" not in sql

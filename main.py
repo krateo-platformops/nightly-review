@@ -52,7 +52,7 @@ def main():
     blocks = {}
     for name, (body, stats) in {
         "clickhouse": evidence.clickhouse(queries, window),
-        "kagent-sessions": evidence.kagent_sessions(token),
+        "kagent-sessions": evidence.kagent_sessions(window),
         "kubernetes": evidence.kubernetes(api),
     }.items():
         st["evidence"][name] = stats
@@ -63,10 +63,14 @@ def main():
     #
     # `empty` used to count as degraded on the reasoning that a source returning nothing has not really
     # been read. That was right for a source that might have had something; it is wrong for one that
-    # CANNOT. kagent scopes A2A sessions per caller under A2A_USER_<contextId>, so this service's own
-    # identity sees none of its own by construction — and the run already explains that in the source's
-    # `note`. Counting it made every successful run report PartiallyCompleted, forever, which is a status
-    # carrying no information: people learn to ignore it, and then miss the night it means something.
+    # CANNOT. The original case was kagent-sessions: it read /api/sessions as itself, and kagent scopes
+    # that to the caller, so it saw none of its own by construction. Counting it made every successful
+    # run report PartiallyCompleted forever — a status carrying no information, which people learn to
+    # ignore and then miss the night it means something.
+    #
+    # That source now reads kagent's Postgres across all users, so its emptiness is real information
+    # rather than a scoping artefact. The rule stays, because it is the right rule for any source that
+    # can legitimately have nothing to say; it just no longer has that one standing exception.
     #
     # So: not-ok is degradation; empty is degradation only when nothing explains it. A source that says
     # `ok` and carries a note about why it is empty has been read, and the answer was "nothing".
