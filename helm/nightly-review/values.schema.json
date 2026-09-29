@@ -21,6 +21,12 @@
     "suspend": {
       "type": "boolean"
     },
+    "jobDeadlineSeconds": {
+      "type": "integer",
+      "minimum": 600,
+      "default": 3600,
+      "description": "activeDeadlineSeconds for each review Job. Must exceed config.agentAnalysis.totalSeconds plus the gather and the main ask. On expiry the run is recorded Failed, never left Running."
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,

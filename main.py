@@ -7,6 +7,7 @@ how a sink can be dead for a week while every tick is a tick — this file exist
 import datetime as dt
 import json
 import os
+import signal
 import sys
 
 import jsonschema
@@ -103,6 +104,7 @@ def main():
 
     st = {"phase": "Running", "startedAt": to.isoformat(), "evidence": {}}
     steps = _Steps(api, run_name, st)
+    _on_terminate(api, run_name, st)
     steps.start("gather")
 
     token = autopilot.service_jwt()
@@ -353,6 +355,31 @@ def _usage(calls):
         if any(k in c for c in reported):
             total[k] = sum(c.get(k, 0) for c in reported)
     return {"calls": calls[:40], "total": total}
+
+
+def _on_terminate(api, run_name, st):
+    """A run the Job kills must not stay Running forever.
+
+    The analyse stage made the run depend on external model calls for up to ~25 more minutes, so the
+    CronJob now carries activeDeadlineSeconds. When that deadline (or an eviction) fires, the kubelet
+    sends SIGTERM and waits terminationGracePeriodSeconds before SIGKILL. Without this handler the
+    ReviewRun would say Running, with a step Running, indefinitely: a record that lies about a run that
+    is over. PEP 475 retries an interrupted socket read after the handler runs, so the handler fires even
+    while a model call is blocked, and SystemExit then unwinds it."""
+    def handler(signum, _frame):
+        now = _now().isoformat()
+        for e in st.get("steps", []):
+            if e.get("phase") == "Running":
+                e |= {"phase": "Failed", "finishedAt": now, "message": "terminated (SIGTERM)"}
+        st.update({"phase": "Failed", "finishedAt": now,
+                   "error": "terminated before finishing: the Job's activeDeadlineSeconds was reached, "
+                            "or the pod was evicted"})
+        try:
+            _patch(api, run_name, st)
+        finally:
+            print(f"[run] terminated by signal {signum}; recorded as Failed", flush=True)
+            sys.exit(143)
+    signal.signal(signal.SIGTERM, handler)
 
 
 def _patch(api, name, status):
