@@ -1,0 +1,151 @@
+{{- if .Values.decisionPolicy.enabled }}
+{{- $name := include "nightly-review.fullname" . }}
+{{- $service := printf "system:serviceaccount:%s:%s" .Release.Namespace $name }}
+# WHAT A PERSON MAY CHANGE ON A PROPOSAL: spec.decision, and nothing else in the spec.
+#
+# WHY RBAC CANNOT SAY THIS. The portal records a decision with a main-resource merge-patch, because
+# snowplow's /call builds only /apis/<g>/<v>/namespaces/<ns>/<resource>/<name> and so cannot reach the
+# status subresource. `patch` on proposals is therefore granted — and RBAC is per resource, not per
+# field, so that grant would also let the same button rewrite the evidence, the change, or the
+# fingerprint the review is deduplicated by. On 057 it is worse than theoretical: portal admins hold
+# cluster-admin through their group, so no Role narrows them at all. Admission is the only layer that
+# sees the fields, and it applies to cluster-admin too.
+#
+# THE SERVICE IS EXEMPT BY NAME, not by group or verb: it is the author of every spec here, and it
+# re-asserts a spec on a fingerprint collision (publish.create_proposal_cr). Everyone else — a portal
+# user through snowplow, an admin with kubectl — is held to the rules below.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}-proposal-decision
+spec:
+  # Fail, not Ignore: a policy that stops applying when it errors is a policy that stops applying.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["review.krateo.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        # The main resource only. proposals/status is a separate resource to admission and stays the
+        # service's to write; nothing here constrains it.
+        resources: ["proposals"]
+  matchConditions:
+    - name: not-the-review-service
+      expression: request.userInfo.username != {{ $service | quote }}
+  variables:
+    # dyn(), because the rule below iterates the spec as a MAP. Typed from the CRD schema it is an
+    # object, which the all() macro does not range over.
+    - name: isUpdate
+      expression: request.operation == 'UPDATE'
+    - name: hadDecision
+      expression: variables.isUpdate && has(oldObject.spec.decision)
+    - name: decisionChanged
+      expression: >-
+        has(object.spec.decision)
+        && !(variables.hadDecision && object.spec.decision == oldObject.spec.decision)
+  validations:
+    # "The spec with the decision key removed is unchanged", written as two directions of key
+    # equality — CEL has no map-delete. Generic over the keys on purpose: a field added to the spec
+    # later is protected on the day it is added, where a list of named fields would leave it open.
+    - expression: >-
+        !variables.isUpdate
+        || (dyn(object.spec).all(k, k == 'decision'
+              || (k in dyn(oldObject.spec) && dyn(object.spec)[k] == dyn(oldObject.spec)[k]))
+            && dyn(oldObject.spec).all(k, k == 'decision' || k in dyn(object.spec)))
+      message: >-
+        Only spec.decision may be changed on a Proposal. Its spec is the record of what the review
+        suggested; the decision is the only part a person writes.
+      reason: Forbidden
+    - expression: "!variables.hadDecision || has(object.spec.decision)"
+      message: A decision, once recorded, cannot be removed.
+      reason: Forbidden
+    # ONE CHANGE OF MIND IS ALLOWED: PrOpen -> Rejected. A change request that was opened and then
+    # closed unmerged IS a rejection, and until a reconciler reads pull requests back this is the only
+    # way such a proposal reaches a terminal phase; forbidding it would leave it PrOpen forever, which
+    # is the "looks undecided" state the Failed phase exists to prevent. Every other change is refused:
+    # a rejection is final (the same suggestion recurring is exactly what it rejected), and
+    # Rejected -> PrOpen would rewrite who decided and when on a record other people have already read.
+    # An IDENTICAL resend is allowed — a double click, a retried request — and changes nothing.
+    - expression: >-
+        !variables.hadDecision || !has(object.spec.decision)
+        || object.spec.decision == oldObject.spec.decision
+        || (oldObject.spec.decision.phase == 'PrOpen' && object.spec.decision.phase == 'Rejected')
+      messageExpression: >-
+        'A ' + oldObject.spec.decision.phase + ' decision is a record and cannot be changed'
+        + (oldObject.spec.decision.phase == 'PrOpen' ? ' except to Rejected' : '') + '.'
+      reason: Forbidden
+    # WHO DECIDED IS THE REQUEST'S IDENTITY, NEVER THE CLIENT'S SAY-SO. With the mutating policy below
+    # installed this always holds, because admission stamped it; it is repeated here so the guarantee
+    # does not depend on that policy existing. Where MutatingAdmissionPolicy is not served, this is the
+    # whole mechanism, and the client must send its own username and a timestamp.
+    - expression: >-
+        !variables.decisionChanged
+        || (has(object.spec.decision.decidedBy) && object.spec.decision.decidedBy == request.userInfo.username
+            && has(object.spec.decision.decidedAt))
+      messageExpression: >-
+        'spec.decision.decidedBy must be the requesting user (' + request.userInfo.username
+        + ') and decidedAt must be set.'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}-proposal-decision
+spec:
+  policyName: {{ $name }}-proposal-decision
+  validationActions: [Deny]
+{{- if .Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/MutatingAdmissionPolicy" }}
+---
+# STAMP WHO AND WHEN FROM THE REQUEST, so the portal cannot forge either and does not have to send them.
+#
+# decidedAt COMES FROM managedFields, because CEL has no clock. The apiserver's field manager runs
+# before mutating admission and writes the current time on the entry of the manager whose fields this
+# request changed — and a changed decision is such a change — so the newest managedFields time IS this
+# request's time, from the apiserver's clock, at second resolution. Proven on a live 1.36 apiserver
+# rather than read from a design doc; if a future release reorders those two steps this goes stale by
+# one write, and the validating policy above still holds decidedBy.
+#
+# Rendered only where the API is served (GA in 1.36). Elsewhere the validating policy alone applies and
+# the client has to supply both fields — see the rule above.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: {{ $name }}-proposal-decision-stamp
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["review.krateo.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["proposals"]
+  matchConditions:
+    - name: not-the-review-service
+      expression: request.userInfo.username != {{ $service | quote }}
+    # Only when the decision is new or different. An identical resend is left alone, so the first
+    # decider's name and time survive a retry.
+    - name: decision-set-or-changed
+      expression: >-
+        has(object.spec.decision)
+        && (request.operation == 'CREATE' || !has(oldObject.spec.decision)
+            || object.spec.decision != oldObject.spec.decision)
+  variables:
+    - name: now
+      expression: dyn(object.metadata.managedFields).map(m, timestamp(m.time)).max()
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: >-
+          Object{spec: Object.spec{decision: Object.spec.decision{
+            decidedBy: request.userInfo.username,
+            decidedAt: string(variables.now)}}}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}-proposal-decision-stamp
+spec:
+  policyName: {{ $name }}-proposal-decision-stamp
+{{- end }}
+{{- end }}

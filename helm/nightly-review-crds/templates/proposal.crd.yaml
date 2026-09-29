@@ -141,9 +141,58 @@ spec:
                   type: object
                   required: [runRef]
                   properties:
-                    runRef: { type: string, description: Name of the ReviewRun. A REFERENCE, never an ownerReference. }
+                    runRef: { type: string, description: "Name of the ReviewRun. A REFERENCE, never an ownerReference." }
                     agent:  { type: string }
                     model:  { type: string }
+                decision:
+                  type: object
+                  required: [phase]
+                  description: >-
+                    A PERSON'S DECISION, AND THE ONLY PART OF THE SPEC ANYONE BUT THIS SERVICE MAY WRITE.
+                    It lives in the spec, not the status, because the portal writes through snowplow's
+                    /call, which builds only the main-resource path and so cannot reach the status
+                    subresource — the same reason the incident page records spec.lifecycle on a
+                    TroubleshootingReport. The portal merge-patches this object with the user's own
+                    token; nightly-review copies it onto status (phase, decidedBy, decidedAt, reason) on
+                    its next run, and a reader should take this field over status.phase until then.
+                    The chart's admission policies (templates/decision-policy.yaml in the nightly-review
+                    chart) keep every other spec field immutable to people, stamp decidedBy and decidedAt
+                    from the request itself so a client cannot say who decided, and allow exactly one
+                    change of mind: PrOpen to Rejected.
+                  x-kubernetes-validations:
+                    - rule: self.phase != 'PrOpen' || has(self.claim)
+                      message: a PrOpen decision names the BuilderPublish claim that opened the change request
+                  properties:
+                    phase:
+                      type: string
+                      enum: [PrOpen, Rejected]
+                      description: >-
+                        The two outcomes a person reaches from the portal. Merged is absent on purpose: a
+                        merge happens in the repository, and a reconciler reading the pull request back is
+                        what should record it, not a button.
+                    reason:
+                      type: string
+                      maxLength: 1000
+                      description: Why, in the decider's words. Optional; a rejection with a reason is what the next prompt change learns from.
+                    decidedBy:
+                      type: string
+                      description: >-
+                        STAMPED BY ADMISSION FROM request.userInfo.username; whatever the client sends is
+                        overwritten. For a portal user this is the identity in their authn-issued
+                        clientconfig, because snowplow's /call dials the apiserver as the caller.
+                    decidedAt:
+                      type: string
+                      format: date-time
+                      description: >-
+                        STAMPED BY ADMISSION, from the apiserver's own clock as recorded in managedFields
+                        for this write — CEL has no now(). Whatever the client sends is overwritten.
+                    claim:
+                      type: string
+                      maxLength: 253
+                      description: >-
+                        The BuilderPublish claim the portal created to open the change request. Required
+                        with PrOpen. Mirrored onto the review.krateo.io/publish-claim label, where the
+                        service records the claims it creates itself, so one selector finds both.
             status:
               type: object
               properties:
@@ -164,6 +213,8 @@ spec:
                     url:    { type: string }
                     number: { type: integer }
                     state:  { type: string, enum: [open, merged, closed] }
+                # Written by the service: for Superseded from its own run, and for PrOpen/Rejected as a
+                # COPY of spec.decision, which is the person's input and wins until this catches up.
                 decidedAt: { type: string, format: date-time }
                 decidedBy: { type: string }
                 reason:    { type: string }

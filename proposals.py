@@ -188,7 +188,7 @@ def subject_key(proposal):
     return "\x1f".join([proposal["kind"], subject])
 
 
-def classify(proposal, by_fingerprint, by_target, by_subject=None):
+def classify(proposal, by_fingerprint, by_target, by_subject=None, decided=None):
     """(action, priors). THREE OUTCOMES, WHERE THE CODE USED TO SEE TWO — and the missing third is why
     `superseded` was reported as a hardcoded 0 every night while its own docstring described a
     mechanism that did not exist.
@@ -199,8 +199,14 @@ def classify(proposal, by_fingerprint, by_target, by_subject=None):
       different body, is a replacement: ("supersede", [names]). The open ones are stale and are marked
       Superseded rather than left beside their own successor for a human to reconcile. A LIST, because
       the two keys can each name a different prior and both are stale.
+    - Exactly what a PERSON has already answered (Rejected, Merged, or a PrOpen they opened) is
+      ("decided", name) — neither a duplicate of an open question nor a new one. It is not written:
+      the object is named by its fingerprint, so writing it would reset that person's answer to
+      Proposed. `decided` is publish.open_index's fourth, optional index.
     - Otherwise ("new", None)."""
     fp = fingerprint(proposal)
+    if decided and fp in decided:
+        return "decided", decided[fp]
     if fp in by_fingerprint:
         return "dedup", by_fingerprint[fp]
     priors = []

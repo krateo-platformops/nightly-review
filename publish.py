@@ -182,8 +182,56 @@ PHASE_PR_OPEN = "PrOpen"
 PHASE_SUPERSEDED = "Superseded"
 PHASE_FAILED = "Failed"
 
+PHASE_REJECTED = "Rejected"
+PHASE_MERGED = "Merged"
+
 OPEN_PHASES = frozenset({None, PHASE_PROPOSED, PHASE_PR_OPEN})
-WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_FAILED})
+# Rejected is written now, as the mirror of a person's spec.decision.
+WRITTEN_PHASES = frozenset({PHASE_PROPOSED, PHASE_PR_OPEN, PHASE_SUPERSEDED, PHASE_FAILED, PHASE_REJECTED})
+# What a person may record in spec.decision. Asserted against the CRD's decision enum by the suite.
+DECISION_PHASES = frozenset({PHASE_PR_OPEN, PHASE_REJECTED})
+# A PERSON'S VERDICT, as opposed to the service's own bookkeeping. Superseded and Failed are this
+# service's to set and to undo — the same finding coming back is a reason to re-open one. Rejected and
+# Merged are somebody's answer, and a later night re-proposing the same fingerprint must not rewrite them.
+PERSON_DECIDED_PHASES = frozenset({PHASE_REJECTED, PHASE_MERGED})
+
+
+def decision(p):
+    """spec.decision when it carries a phase this service recognises, else None. A malformed one is
+    ignored rather than trusted: the CRD enum should make it impossible, and a proposal this code
+    cannot read is left for a person rather than guessed at."""
+    d = (p.get("spec") or {}).get("decision")
+    if isinstance(d, dict) and d.get("phase") in DECISION_PHASES:
+        return d
+    return None
+
+
+def effective_phase(p):
+    """THE PHASE TO ACT ON: spec.decision's when there is one, status.phase otherwise.
+
+    The spec wins because it is newer by construction. The portal writes the decision into the spec
+    (snowplow /call cannot reach the status subresource) and this service copies it to status only on
+    its next run — so for up to a night status still says Proposed about a proposal a person has
+    already rejected. Reading status there is how a rejected suggestion gets superseded, or rewritten
+    back to Proposed, by the very run that should have respected it.
+
+    ONE EXCEPTION: a PrOpen decision whose status has already moved on to Merged. Merge is the outcome
+    the pull request reached, written by whatever reads it back, and it is later than the decision
+    that opened it — not a disagreement to settle in the decision's favour."""
+    status_phase = (p.get("status") or {}).get("phase")
+    d = decision(p)
+    if d is None:
+        return status_phase
+    if d["phase"] == PHASE_PR_OPEN and status_phase == PHASE_MERGED:
+        return status_phase
+    return d["phase"]
+
+
+def person_decided(p):
+    """Whether a person has answered this proposal. Either route counts: spec.decision (the portal,
+    from now on) or a person-decided phase already on status (written by hand, or by the portal
+    before it could write the spec)."""
+    return decision(p) is not None or effective_phase(p) in PERSON_DECIDED_PHASES
 
 
 def proposal_name(proposal):
@@ -243,7 +291,7 @@ def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED
     return created["metadata"]["name"]
 
 
-def open_index(api, run_name=None):
+def open_index(api, run_name=None, decided=None):
     """(by_fingerprint, by_target, by_subject) over proposals that are still undecided.
 
     Three indexes because there are three questions. By fingerprint answers "have we said exactly
@@ -259,16 +307,27 @@ def open_index(api, run_name=None):
       a new proposal for the person to weigh, not as a silent retirement of the one they acted on.
     - EARLIER RUNS ONLY (subject).  Two proposals in one run sharing a subject are the model splitting one finding
       across two changes, not tonight replacing last night.
-    - NEVER A NULL SUBJECT. Legacy proposals carry none; see proposals.subject_key."""
+    - NEVER A NULL SUBJECT. Legacy proposals carry none; see proposals.subject_key.
+
+    A PERSON-DECIDED PROPOSAL IS IN NONE OF THE THREE — not even the fingerprint index, though PrOpen is
+    otherwise "open". Superseding one would retire a person's answer on a model's next opinion, and
+    deduplicating into one would count tonight's repeat as if it were still awaiting that answer. They
+    go to `decided` (fingerprint -> name) when the caller passes a dict, so classify can say the
+    suggestion was already answered and the run leaves the object alone. Read through effective_phase,
+    so a decision the service has not mirrored yet already counts."""
     got = api.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals").get("items", [])
     by_fingerprint, by_target, by_subject = {}, {}, {}
     for p in got:
-        phase = (p.get("status") or {}).get("phase")
-        if phase not in OPEN_PHASES:
-            continue
         spec = p.get("spec") or {}
         fp, name = spec.get("fingerprint"), p["metadata"]["name"]
         if not fp or not spec.get("kind"):
+            continue
+        if person_decided(p):
+            if decided is not None:
+                decided[fp] = name
+            continue
+        phase = effective_phase(p)
+        if phase not in OPEN_PHASES:
             continue
         by_fingerprint[fp] = name
         if phase == PHASE_PROPOSED:
@@ -303,3 +362,52 @@ def mark_superseded(api, name, by=None, reason=None):
         status["reason"] = reason
     api.patch_namespaced_custom_object_status(
         GROUP, VERSION, NAMESPACE, "proposals", name, {"status": status})
+
+
+CLAIM_LABEL = "review.krateo.io/publish-claim"
+_MIRRORED = ("phase", "decidedBy", "decidedAt", "reason")
+
+
+def mirror_decisions(api):
+    """Copy every person's spec.decision onto status. Returns the number of proposals written.
+
+    STATUS STAYS THE SERVICE'S RECORD; spec.decision IS THE PERSON'S INPUT. The portal can only write
+    the spec (snowplow /call cannot reach the status subresource), so without this the status of a
+    decided proposal would say Proposed forever, and every reader — the printer columns, the portal's
+    lists, the next run's own indexes — would have to know to look in two places. The mirror makes
+    status true again; effective_phase covers the gap until it runs.
+
+    IDEMPOTENT BY COMPARISON, NOT BY FLAG: a proposal is written only when a mirrored field differs, so a
+    run over a hundred already-mirrored decisions makes no writes at all, and a run that died halfway
+    finishes the rest next time. Fields the decision does not carry are left as they are rather than
+    cleared — a decision predating the stamping policy has no decidedAt, and erasing one status already
+    had would lose the only record of it.
+
+    THE CLAIM IS MIRRORED TO THE LABEL, not to status: status has no field for it, and the label is
+    where this service already records the claims it creates itself (create_proposal_cr), so one
+    selector finds every proposal with a change request behind it, whoever opened it."""
+    got = api.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals").get("items", [])
+    written = 0
+    for p in got:
+        d = decision(p)
+        if d is None:
+            continue
+        name, status = p["metadata"]["name"], p.get("status") or {}
+        diff = {}
+        # A merged PR is later than the decision that opened it (see effective_phase): status already
+        # says more than the decision does, so it is left alone.
+        if effective_phase(p) == d["phase"]:
+            diff = {k: d[k] for k in _MIRRORED if d.get(k) is not None and status.get(k) != d[k]}
+        claim = d.get("claim")
+        labels = (p.get("metadata") or {}).get("labels") or {}
+        wrote = False
+        if diff:
+            api.patch_namespaced_custom_object_status(
+                GROUP, VERSION, NAMESPACE, "proposals", name, {"status": diff})
+            wrote = True
+        if claim and labels.get(CLAIM_LABEL) != claim:
+            api.patch_namespaced_custom_object(
+                GROUP, VERSION, NAMESPACE, "proposals", name, {"metadata": {"labels": {CLAIM_LABEL: claim}}})
+            wrote = True
+        written += wrote
+    return written

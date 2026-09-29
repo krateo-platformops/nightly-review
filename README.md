@@ -57,10 +57,39 @@ run's expiry garbage-collect the decision. An open proposal is never collected a
 undecided question, and deleting those is how a review loop quietly stops mattering.
 
 Portal admins act on proposals through the `<release>-portal-admin` ClusterRole (read both kinds,
-get/patch/update `proposals/status`, never the spec). It is **bound** to the groups in
+get/patch a Proposal, get/patch/update `proposals/status`). It is **bound** to the groups in
 `portalAdminAccess.groups` (default `admins`), not aggregated, because Krateo's admins hold
 cluster-admin through their group rather than the built-in `admin` ClusterRole that `aggregate-to-admin`
 feeds.
+
+## A person's decision: `spec.decision`
+
+The portal records a decision in the **spec**, because snowplow's `/call` builds only the
+main-resource path and cannot reach `proposals/status`. It is the same pattern as `spec.lifecycle` on a
+TroubleshootingReport. The portal sends a merge-patch with the user's own token:
+
+```json
+{"spec": {"decision": {"phase": "Rejected", "reason": "why, in the person's words"}}}
+{"spec": {"decision": {"phase": "PrOpen", "claim": "<BuilderPublish claim name>"}}}
+```
+
+- **Admission keeps it honest** (`templates/decision-policy.yaml`, `decisionPolicy.enabled`, on by
+  default). For anyone but this service's ServiceAccount, a ValidatingAdmissionPolicy refuses any
+  other spec change, refuses removing a decision, and refuses changing one, with one exception:
+  `PrOpen → Rejected`, because a change request closed unmerged is a rejection. An identical resend is
+  allowed and changes nothing. A MutatingAdmissionPolicy stamps `decidedBy` from
+  `request.userInfo.username` and `decidedAt` from the apiserver's clock, so the portal neither sends
+  nor can forge them. It is rendered only where `admissionregistration.k8s.io/v1`
+  MutatingAdmissionPolicy is served (Kubernetes 1.36+). Elsewhere the validating policy still requires
+  `decidedBy` to equal the requesting user, and the client must send both fields.
+- **The run mirrors it onto status** at the start of every run (phase, decidedBy, decidedAt, reason),
+  and the claim onto the `review.krateo.io/publish-claim` label. It writes only what differs, so it is
+  idempotent. Status stays the service's record; the decision is the person's input.
+- **The decision is authoritative before the mirror runs.** Dedup and supersession read
+  `spec.decision` first. A decided proposal (and one whose status is already `Rejected` or `Merged`) is
+  never superseded and never deduplicated into. The same fingerprint coming back is counted as
+  *already decided* in the validate step and is not written, because the object is named after its
+  fingerprint and writing it would reset the answer to `Proposed`.
 
 ## What a finding is, and how night two relates to night one
 
@@ -114,7 +143,8 @@ before the collector's JWT redaction landed can still carry live credentials.
 See `helm/nightly-review/values.yaml`, and `values.schema.json`, whose defaults are what the installer
 applies. The values that matter: `clickhouseQueries` (the reviewable surface; adapt them to your
 schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
-`config.targetCheckApiUrl` (empty disables the existence check), and `portalAdminAccess`.
+`config.targetCheckApiUrl` (empty disables the existence check), `portalAdminAccess`, and
+`decisionPolicy`.
 
 Releases are cut by tag: `Chart.yaml` ships `CHART_VERSION`, and a `X.Y.Z` tag builds the image and
 publishes both charts at that version.

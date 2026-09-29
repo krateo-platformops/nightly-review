@@ -85,12 +85,20 @@ secrets:
     name: ""
     userKey: username
     passwordKey: password
-# WHO MAY ACT ON A PROPOSAL FROM THE PORTAL: read Proposals and ReviewRuns, and write a Proposal's
-# STATUS (the decision, the pull request, supersededBy) — never its spec. `admins` is the group Krateo's
+# WHO MAY ACT ON A PROPOSAL FROM THE PORTAL: read Proposals and ReviewRuns, patch a Proposal (to record
+# spec.decision — decisionPolicy below keeps it to that) and write its status. `admins` is the group Krateo's
 # authn gives its admin users; see templates/rbac.yaml for why this is a binding and not an aggregation.
 portalAdminAccess:
   enabled: true
   groups: [admins]
+
+# WHAT THAT PATCH MAY CHANGE. The portal records a decision by patching the Proposal itself (spec.decision),
+# and RBAC cannot narrow a patch to one field — so a ValidatingAdmissionPolicy refuses any other spec
+# change from anyone but this service, and a MutatingAdmissionPolicy stamps decidedBy/decidedAt from the
+# request so the portal cannot forge who decided. See templates/decision-policy.yaml. Turning this off
+# leaves every admin able to rewrite a proposal's evidence and change.
+decisionPolicy:
+  enabled: true
 
 resources:
   requests: { cpu: 100m, memory: 256Mi }
