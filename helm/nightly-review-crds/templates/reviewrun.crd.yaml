@@ -48,7 +48,7 @@ spec:
                 sources:
                   type: array
                   description: Evidence sources this run was asked to read.
-                  items: { type: string, enum: [clickhouse, kagent-sessions, kubernetes] }
+                  items: { type: string, enum: [clickhouse, kagent-sessions, kubernetes, agent-analysis] }
                 dryRun:
                   type: boolean
                   default: false
@@ -81,7 +81,8 @@ spec:
                   description: >-
                     COUNTS AND QUERIES ONLY, never retrieved content. Telemetry rows do not belong in
                     etcd, and keeping them here would re-create in a CR the very exposure the window
-                    bound above exists to prevent.
+                    bound above exists to prevent. (The one bounded exception, redacted excerpts inside
+                    the per-agent assessments, lives in status.agentAnalysis, not here.)
                   additionalProperties:
                     type: object
                     properties:
@@ -102,9 +103,10 @@ spec:
                           user-authored messages for EVERY user out of kagent's Postgres — a deliberate
                           departure from the per-user RBAC the rest of this platform enforces, and
                           therefore something the record must state rather than leave to be discovered.
-                          The role holds SELECT on `session` and `event` and is revoked on `task`; agent
-                          replies and tool output are in `event` too, and are left out by the query and
-                          re-checked in code, not by the grant. Declared here because this schema is
+                          The role holds SELECT on `session` and `event` and is revoked on `task`. The
+                          kagent-sessions source leaves agent replies and tool output out, by the query
+                          and again in code; the agent-analysis source reads them, and says so here in
+                          its own scope. Declared here because this schema is
                           structural: an undeclared field is pruned on write, and the run would then
                           claim a scope it never recorded — the same silent-pruning bug that hid the
                           truncation fields in 0.1.14.
@@ -162,7 +164,96 @@ spec:
                           kept from the model. Recorded beside `truncated`, which is set too.
                       droppedSessions:
                         type: integer
-                        description: Conversations with questions in the window beyond the session cap.
+                        description: >-
+                          Conversations in the window beyond the session cap (or, for agent-analysis,
+                          beyond the per-agent session cap or character budget) that the model never saw.
+                      questionsFolded:
+                        type: integer
+                        description: >-
+                          kagent-sessions only. Conversations whose questions were read in full by the
+                          agent-analysis stage and so were NOT quoted again in the main corpus — replaced
+                          by one pointer line per agent. The truncation fields beside it describe what was
+                          actually sent after that fold. Agents the analysis did not cover keep their
+                          questions here.
+                      droppedAgents:
+                        type: integer
+                        description: >-
+                          agent-analysis only. Agents with conversations in the window left unanalysed
+                          because the run's agent cap (config.agentAnalysis.maxAgents) was reached. Named
+                          in `skipped`.
+                      skipped:
+                        type: array
+                        maxItems: 30
+                        description: >-
+                          agent-analysis only. Agents with conversations in the window that were not
+                          analysed, and why: `over maxAgents`, `excluded` (config.agentAnalysis.
+                          excludeAgents, and always the reviewer itself), or `not deployed` — sessions
+                          outlive their agent, and a retired agent's leftovers are history, not a finding.
+                        items:
+                          type: object
+                          properties:
+                            agent:    { type: string }
+                            sessions: { type: integer }
+                            reason:   { type: string, enum: [over maxAgents, excluded, not deployed] }
+                      agents:
+                        type: array
+                        maxItems: 30
+                        description: >-
+                          agent-analysis only. One entry per agent the stage chose, whether or not its
+                          call succeeded: what it read, what was cut, what the call cost, and — when it
+                          failed — why. One agent's failure is recorded here and never blanks the run.
+                        items:
+                          type: object
+                          properties:
+                            agent:             { type: string, description: "namespace/name" }
+                            sessions:          { type: integer, description: "Conversations of this agent in the window." }
+                            delegatedSessions: { type: integer, description: "Of those, opened by another agent over A2A." }
+                            conversations:     { type: integer, description: "Conversations actually shown to the model." }
+                            messages:          { type: integer, description: "Stored events shown to the model." }
+                            droppedChars:      { type: integer, description: "Characters cut by the per-message, per-tool-result and per-agent caps, and events too large to fetch." }
+                            droppedMessages:   { type: integer, description: "Events in the window the model did not see, whatever cut them." }
+                            droppedSessions:   { type: integer }
+                            promptChars:       { type: integer, description: "The resolved prompt's size before the prompt cap." }
+                            promptTruncated:   { type: boolean }
+                            promptSource:
+                              type: string
+                              description: >-
+                                Where the prompt that was analysed came from: spec.declarative.systemMessage
+                                and, through promptTemplate include(), the ConfigMap keys it resolved. Never a
+                                Secret — a systemMessageFrom Secret is recorded in promptNote as not read.
+                            promptNote:        { type: string, description: "What could not be resolved in the prompt, and why." }
+                            promptRepo:
+                              type: string
+                              description: >-
+                                The repository the Agent (or its prompt ConfigMap) DECLARES its prompt lives
+                                in, by annotation (krateo.io/prompt-repo, krateo.io/source-repo or
+                                org.opencontainers.image.source). A Prompt proposal about this agent is aimed
+                                there whatever the model chose. Absent when nothing declares one.
+                            tokens:
+                              type: object
+                              description: What this agent's call reported. Absent when it reported nothing.
+                              properties:
+                                inputTokens:  { type: integer }
+                                outputTokens: { type: integer }
+                                totalTokens:  { type: integer }
+                            measured:
+                              type: object
+                              description: Counted by the service from the stored events, not by the model.
+                              properties:
+                                conversations:           { type: integer }
+                                withToolErrors:          { type: integer }
+                                unansweredAtWindowEnd:   { type: integer }
+                                withARepeatedCall3x:     { type: integer }
+                                delegatedByAnotherAgent: { type: integer }
+                            patterns:           { type: integer, description: "Failure patterns kept after the service's checks." }
+                            promptFindings:     { type: integer }
+                            unverifiedExamples:
+                              type: integer
+                              description: >-
+                                Quoted excerpts the service could not find in the transcript (or prompt) they
+                                claimed to come from, plus patterns citing no conversation that exists — all
+                                dropped. A high number means the analysis is paraphrasing or inventing.
+                            error:              { type: string }
                       shapes:
                         type: object
                         additionalProperties: { type: integer }
@@ -207,15 +298,16 @@ spec:
                 steps:
                   type: array
                   description: >-
-                    Where the run spent its time and where it stopped: gather, ask, validate, publish,
-                    record, in that order. The phase says THAT a run failed; this says in which stage,
+                    Where the run spent its time and where it stopped: gather, analyse, ask, validate,
+                    publish, record, in that order. `analyse` is the per-agent conversation analysis; it
+                    is Failed only when no agent could be analysed, and the run still goes on to ask. The phase says THAT a run failed; this says in which stage,
                     and in particular whether the model was ever called. `publish` is Skipped on a dry
                     run — the permanent mode, since the portal opens pull requests per proposal.
                   items:
                     type: object
                     required: [name, phase]
                     properties:
-                      name:       { type: string, enum: [gather, ask, validate, publish, record] }
+                      name:       { type: string, enum: [gather, analyse, ask, validate, publish, record] }
                       phase:      { type: string, enum: [Running, Succeeded, Failed, Skipped] }
                       startedAt:  { type: string, format: date-time }
                       finishedAt: { type: string, format: date-time }
@@ -232,6 +324,112 @@ spec:
                     inputTokens:  { type: integer }
                     outputTokens: { type: integer }
                     totalTokens:  { type: integer }
+                usage:
+                  type: object
+                  description: >-
+                    EVERY model call this run made — one per analysed agent, then the main ask — each with
+                    the tokens it reported, and a total. status.model stays the main ask alone, as before.
+                    A call that reported nothing is listed without token fields rather than as zeros, and
+                    `total` says how many calls it covers, so a sum over some calls is never read as the
+                    night's cost.
+                  properties:
+                    calls:
+                      type: array
+                      maxItems: 40
+                      items:
+                        type: object
+                        properties:
+                          step:         { type: string, enum: [analyse, ask] }
+                          agent:        { type: string }
+                          inputTokens:  { type: integer }
+                          outputTokens: { type: integer }
+                          totalTokens:  { type: integer }
+                    total:
+                      type: object
+                      properties:
+                        calls:         { type: integer }
+                        reportedCalls: { type: integer }
+                        inputTokens:   { type: integer }
+                        outputTokens:  { type: integer }
+                        totalTokens:   { type: integer }
+                agentAnalysis:
+                  type: object
+                  description: >-
+                    What the analyse stage concluded, per agent, bounded so the portal can show it. These
+                    are what the main review read INSTEAD of the transcripts. Model output, redacted and
+                    counted by the service: `count` is the number of distinct cited conversations that
+                    exist, and every excerpt was found in the transcript (or, for promptExcerpt, in the
+                    prompt) it claims to quote. Conversations are named by a per-run ordinal, never an
+                    id, and no user is named. THE ONE PLACE A RUN KEEPS QUOTED CONTENT, deliberately and
+                    bounded: at most three redacted excerpts of 300 characters per pattern.
+                  properties:
+                    assessments:
+                      type: array
+                      maxItems: 20
+                      items:
+                        type: object
+                        properties:
+                          agent:         { type: string }
+                          conversations: { type: integer }
+                          promptSource:  { type: string, maxLength: 300 }
+                          promptRepo:    { type: string }
+                          summary:       { type: string, maxLength: 600 }
+                          servedWell:    { type: string, maxLength: 400 }
+                          measured:
+                            type: object
+                            properties:
+                              conversations:           { type: integer }
+                              withToolErrors:          { type: integer }
+                              unansweredAtWindowEnd:   { type: integer }
+                              withARepeatedCall3x:     { type: integer }
+                              delegatedByAnotherAgent: { type: integer }
+                          failurePatterns:
+                            type: array
+                            maxItems: 8
+                            items:
+                              type: object
+                              properties:
+                                pattern:  { type: string, maxLength: 200 }
+                                category: { type: string, enum: [misroute, refusal, wrong-or-invented, tool-failure, loop, ignored-instruction, other] }
+                                count:    { type: integer }
+                                conversations: { type: array, maxItems: 50, items: { type: integer } }
+                                examples:
+                                  type: array
+                                  maxItems: 3
+                                  items:
+                                    type: object
+                                    properties:
+                                      conversation: { type: integer }
+                                      excerpt:      { type: string, maxLength: 320 }
+                          promptFindings:
+                            type: array
+                            maxItems: 6
+                            items:
+                              type: object
+                              properties:
+                                finding:         { type: string, maxLength: 400 }
+                                promptExcerpt:   { type: string, maxLength: 320 }
+                                evidence:        { type: string, maxLength: 600 }
+                                suggestedChange: { type: string, maxLength: 1200 }
+                                count:           { type: integer }
+                                conversations:   { type: array, maxItems: 50, items: { type: integer } }
+                          recurringNeeds:
+                            type: array
+                            maxItems: 6
+                            items:
+                              type: object
+                              properties:
+                                need:          { type: string, maxLength: 200 }
+                                count:         { type: integer }
+                                conversations: { type: array, maxItems: 50, items: { type: integer } }
+                                examples:
+                                  type: array
+                                  maxItems: 3
+                                  items:
+                                    type: object
+                                    properties:
+                                      conversation: { type: integer }
+                                      excerpt:      { type: string, maxLength: 320 }
                 error: { type: string }
                 conditions:
                   type: array

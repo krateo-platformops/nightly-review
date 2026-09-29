@@ -80,7 +80,7 @@ spec:
                     type: object
                     required: [source, summary]
                     properties:
-                      source:  { type: string, enum: [clickhouse, kagent-sessions, kubernetes, repository] }
+                      source:  { type: string, enum: [clickhouse, kagent-sessions, kubernetes, repository, agent-analysis] }
                       summary: { type: string, maxLength: 2000 }
                       query:
                         type: string

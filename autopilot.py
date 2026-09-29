@@ -53,14 +53,17 @@ def service_jwt():
         return None
 
 
-def context_id(run_name):
-    """One A2A thread PER RUN, not one continuing thread across nights.
+def context_id(run_name, scope=None):
+    """One A2A thread PER RUN, not one continuing thread across nights — and, inside a run, one per
+    `scope`: the agent-analysis stage asks once per agent, and in one shared thread each agent's
+    transcripts would sit in the context of the next agent's analysis (kagent keys the session on this
+    id), so the eighth call would carry all seven before it and the main review all eight.
 
     A continuing thread would let the agent remember what it proposed before — tempting, and wrong to
     rely on: deduplication would then depend on the model recalling correctly, and would degrade
     silently as the context filled. Dedup is done deterministically by fingerprint in code, so the
     agent gets a clean context every night and correctness does not depend on its memory."""
-    return str(uuid.uuid5(_NS, f"nightly-review:{run_name}"))
+    return str(uuid.uuid5(_NS, f"nightly-review:{run_name}" + (f":{scope}" if scope else "")))
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
@@ -108,9 +111,20 @@ def token_usage(result):
     return out
 
 
-def ask(system, user_message, run_name, token=None):
+def ask(system, user_message, run_name, token=None, context=None, timeout=None):
     """One JSON-RPC message/stream turn. Returns (parsed_json, raw_text, usage) — usage is {} when the
-    agent reported none, never zeros standing in for "unknown"."""
+    agent reported none, never zeros standing in for "unknown".
+
+    `context` scopes the A2A thread inside the run (see context_id); `timeout` overrides A2A_TIMEOUT
+    for this one call, so a stage with many calls can give each its own share of the night.
+
+    THE INSTRUCTIONS TRAVEL IN THE MESSAGE, AS ITS FIRST PART. They used to go in the request's
+    `params.metadata.systemPrompt`, which kagent 0.10.1 never reads: its request converter builds the
+    ADK turn from `message.parts` alone (kagent-adk converters/request_converter.py), and neither
+    runtime has any reference to a systemPrompt key. So every run until this one was answered by a model
+    that had seen the reviewer Agent's own systemMessage and the evidence, and NOT ONE LINE of
+    prompt.SYSTEM — not the alert kind, not the subject rules, not what to do with people's questions.
+    The contract survived only because build_user_message renders the schema into the message."""
     payload = {
         "jsonrpc": "2.0",
         "id": str(uuid.uuid4()),
@@ -118,18 +132,19 @@ def ask(system, user_message, run_name, token=None):
         "params": {
             "message": {
                 "role": "user",
-                "parts": [{"kind": "text", "text": user_message}],
+                "parts": [{"kind": "text", "text": f"INSTRUCTIONS\n\n{system}"},
+                          {"kind": "text", "text": user_message}],
                 "messageId": str(uuid.uuid4()),
-                "contextId": context_id(run_name),
+                "contextId": context_id(run_name, context),
             },
-            "metadata": {"systemPrompt": system},
         },
     }
     headers = {"content-type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    deadline = time.monotonic() + A2A_TIMEOUT
+    budget = timeout or A2A_TIMEOUT
+    deadline = time.monotonic() + budget
     resp = requests.post(AUTOPILOT_A2A, json=payload, headers=headers,
                          timeout=(30, A2A_READ_TIMEOUT), stream=True)
     resp.raise_for_status()
@@ -182,7 +197,7 @@ def ask(system, user_message, run_name, token=None):
         raise ValueError(f"agent task {last_state}"+(f": {detail}" if detail else ""))
     if not candidates:
         if overran:
-            raise ValueError(f"A2A deadline exceeded after {A2A_TIMEOUT}s with no text in {events} "
+            raise ValueError(f"A2A deadline exceeded after {budget}s with no text in {events} "
                              f"events (last state: {last_state or 'none'})")
         raise ValueError(f"no text in {events} A2A events (last state: {last_state or 'none'})")
 
@@ -210,6 +225,6 @@ def ask(system, user_message, run_name, token=None):
     try:
         return extract_json(joined), joined, usage
     except (ValueError, json.JSONDecodeError) as exc:
-        overrun = f"A2A deadline exceeded after {A2A_TIMEOUT}s; " if overran else ""
+        overrun = f"A2A deadline exceeded after {budget}s; " if overran else ""
         raise ValueError(f"{overrun}no JSON object in {len(ordered)} candidates nor in their "
                          f"concatenation ({len(joined)} chars; last error: {exc or last_err})")

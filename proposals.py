@@ -42,6 +42,21 @@ SECRET_PATTERNS = [
     (re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+):[^\s/@]+@"), r"\1:<REDACTED>@"),
     (re.compile(r"(?i)\b(api[_\-]?key|client[_\-]?secret|access[_\-]?token|password|passwd)"
                 r"\s*[=:]\s*[\"\']?([A-Za-z0-9._\-]{8,})[\"\']?"), r"\1=<REDACTED>"),
+    # THE SAME KEYS, JSON-QUOTED. The pattern above needs the colon right after the key, and in JSON a
+    # quote sits between them — so `"password": "hunter2hunter2"` passed through untouched. That shape
+    # was rare while only people's questions were read; tool ARGUMENTS are rendered as JSON, and the
+    # agent-analysis stage reads every one of them. `token` is here bare as well, because tool arguments
+    # carry it bare; `secret` is not, because in Kubernetes JSON it is far more often a Secret's NAME.
+    (re.compile(r"(?i)\"(api[_\-]?key|client[_\-]?secret|access[_\-]?token|refresh[_\-]?token|token|password|passwd)\""
+                r"\s*:\s*\"[^\"\\]{8,}\""), r'"\1": "<REDACTED>"'),
+    # AND IN PROSE. People type "my password is X" to an agent, and agents answer "the password is X";
+    # neither has a colon, so both passed. Found by the agent-analysis end-to-end run, where a planted
+    # password in a question reached the fake reviewer — through #32's question read as well. The value
+    # must carry a digit: prose has no other way to tell "the password is hunter2hunter2" from "the
+    # password is required", and redacting English would make every transcript unreadable. A password of
+    # letters only still passes; that is this pattern's stated limit, not an oversight.
+    (re.compile(r"(?i)\b(password|passwd|api[_\- ]?key|token)(\s+(?:is|was|=)\s+)[\"\']?(?=[^\s\"\']*\d)[^\s\"\']{8,}[\"\']?"),
+     r"\1\2<REDACTED>"),
 ]
 
 
