@@ -393,3 +393,28 @@ def test_deployed_set_failure_degrades_rather_than_losing_the_source():
     import inspect, evidence
     src = inspect.getsource(evidence.kagent_sessions)
     assert "deployed_err" in src and "idle/active figures are unaffected" in src
+
+
+def test_findings_are_gated_on_the_agent_still_being_deployed():
+    """Session rows OUTLIVE the agent that made them.
+
+    Delete an agent and its sessions remain, so staleness derived from sessions alone reports
+    "IDLE 21d" forever for something that no longer exists — not a stale finding but a permanent false
+    one, which accumulates as agents are retired. Every finding must therefore be intersected with the
+    deployed set, and only `never` was when this was first shipped."""
+    import inspect, evidence
+    src = inspect.getsource(evidence.kagent_sessions)
+    body = src[src.index("live = set(deployed)"):src.index("# Problems first")]
+    for name in ("stale", "rare", "active"):
+        line = next(l for l in body.splitlines() if l.strip().startswith(f"{name} = "))
+        block = body[body.index(line):]
+        upto = block[:block.index("\n\n")] if "\n\n" in block else block
+        assert "k in live" in upto, f"{name} is not gated on the deployed set"
+
+
+def test_unreadable_deployed_set_over_reports_rather_than_under_reports():
+    """If the deployed set is unavailable we cannot tell retired from idle. Falling back to reporting
+    everything (with the note) is right; falling back to reporting nothing would hide live problems."""
+    import inspect, evidence
+    src = inspect.getsource(evidence.kagent_sessions)
+    assert "live = set(deployed) if deployed else set(seen)" in src
