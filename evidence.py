@@ -213,10 +213,21 @@ def kagent_sessions(api, window, limit=200):
             idle = (now - ls).days
         seen[agent] = (all_time, in_window, users, idle)
 
+    # EVERY FINDING IS GATED ON THE AGENT STILL BEING DEPLOYED. Session rows outlive the agent that made
+    # them: delete an agent and its history stays, so a source that derives staleness from sessions alone
+    # reports "IDLE 21d" forever for something that no longer exists. That is not a stale finding, it is a
+    # permanent false one, and it gets worse over time as more agents are retired. An idle agent that is
+    # not deployed is history, not a problem.
+    #
+    # When the deployed set could not be read we cannot make that distinction, so `live` falls back to
+    # every agent seen and the note already appended says the comparison was unavailable — degrading to
+    # over-reporting with an explanation, rather than silently reporting nothing.
+    live = set(deployed) if deployed else set(seen)
     never = sorted(deployed[k] for k in deployed if k not in seen) if deployed else []
-    stale = sorted(((v[3], k) for k, v in seen.items() if v[3] is not None and v[3] >= 7), reverse=True)
-    rare = sorted((v[0], k) for k, v in seen.items() if v[0] <= 3)
-    active = sorted(((v[1], k) for k, v in seen.items() if v[1] > 0), reverse=True)
+    stale = sorted(((v[3], k) for k, v in seen.items()
+                    if k in live and v[3] is not None and v[3] >= 7), reverse=True)
+    rare = sorted((v[0], k) for k, v in seen.items() if k in live and v[0] <= 3)
+    active = sorted(((v[1], k) for k, v in seen.items() if k in live and v[1] > 0), reverse=True)
 
     # Problems first. The model reads this top-down and the interesting rows must not be buried under a
     # census of everything that is fine.
