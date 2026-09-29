@@ -19,6 +19,12 @@ rules:
   - apiGroups: ["observability.krateo.io"]
     resources: ["alerts"]
     verbs: ["get", "list"]
+  # Page roots, for the same reason as Alerts: a Widget proposal for a page that already exists is the
+  # duplicate-alert failure in another kind. There is no Page kind; a page is a Flex named page-*.
+  # Without this grant the read 403s and the kubernetes source is degraded on every run.
+  - apiGroups: ["widgets.templates.krateo.io"]
+    resources: ["flexes"]
+    verbs: ["list"]
   # PUBLISHING IS A CLAIM NOW, NOT A GITHUB CALL. This service creates one BuilderPublish per proposal
   # and the platform's own chain does the rest, so the write credential it needs is this — permission to
   # ask — rather than a token that can reach a repository. `patch` is here because the claim name derives

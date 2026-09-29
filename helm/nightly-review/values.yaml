@@ -28,13 +28,54 @@ retention:
                                # an OPEN proposal is never collected — it is an undecided question
 
 # The evidence queries, as configuration rather than code, so they are reviewable and adaptable to your
-# ClickHouse schema without a new image. `{from}` and `{to}` are substituted; nothing else is.
+# ClickHouse schema without a new image. `{from}` and `{to}` are substituted; nothing else is. They
+# arrive as 'YYYY-MM-DD HH:MM:SS' in UTC, not ISO-8601: ClickHouse cannot range-prune a DateTime64
+# against an ISO literal, and on 057 that was the difference between 2.3s and a 120s timeout (#23).
+# A query without both placeholders is refused, not run.
 # A model is never asked to author SQL against a store that has held credentials.
-clickhouseQueries: {}
-  # errorsByService: |
-  #   SELECT ServiceName, count() AS n, any(Body) AS sample
-  #   FROM otel_logs WHERE Timestamp BETWEEN '{from}' AND '{to}' AND SeverityText IN ('ERROR','FATAL')
-  #   GROUP BY ServiceName ORDER BY n DESC LIMIT 25
+#
+# THESE DEFAULTS ARE WRITTEN FOR THE SCHEMA KRATEO ACTUALLY WRITES (database `default`, table
+# `otel_logs`), and they replace an example that could never have returned a row: it filtered
+# SeverityText IN ('ERROR','FATAL'), and SeverityText is ALWAYS EMPTY on this platform — severity
+# travels in the text. Anyone who enabled it got zero rows forever and a platform that looked healthy.
+#   * Container logs carry ResourceAttributes['telemetry.source'] = ''; Kubernetes events carry
+#     'k8s-events', with the event itself as JSON in Body.
+#   * They AGGREGATE rather than return rows. The model is asked for judgement about patterns, and
+#     counts are far cheaper in context and far less likely to carry a credential out of a log line
+#     than raw Body text.
+# Helm MERGES maps: a key you set replaces the default of the same name, and a default you do not
+# want is removed by setting it to null.
+clickhouseQueries:
+  errorPatternsByService: |
+    SELECT ServiceName,
+           ResourceAttributes['k8s.namespace.name'] AS ns,
+           count() AS n
+    FROM otel_logs
+    WHERE Timestamp BETWEEN '{from}' AND '{to}'
+      AND ResourceAttributes['telemetry.source'] = ''
+      AND (position(Body, 'ERROR') > 0 OR position(Body, 'error') > 0
+           OR position(Body, 'Failed') > 0 OR position(Body, 'panic') > 0)
+    GROUP BY ServiceName, ns
+    ORDER BY n DESC
+    LIMIT 25
+  kubernetesEventReasons: |
+    SELECT JSONExtractString(Body, 'object', 'reason') AS reason,
+           JSONExtractString(Body, 'object', 'kind')   AS kind,
+           count() AS n
+    FROM otel_logs
+    WHERE Timestamp BETWEEN '{from}' AND '{to}'
+      AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+      AND reason != ''
+    GROUP BY reason, kind
+    ORDER BY n DESC
+    LIMIT 25
+  logVolumeByService: |
+    SELECT ServiceName, count() AS n
+    FROM otel_logs
+    WHERE Timestamp BETWEEN '{from}' AND '{to}'
+    GROUP BY ServiceName
+    ORDER BY n DESC
+    LIMIT 25
 
 # WHO DOES THE REVIEWING. A dedicated agent holding NO TOOLS — see templates/agent.yaml for why that
 # is the point rather than an economy. Set `create: false` to bring your own via config.reviewerA2aUrl.
@@ -55,6 +96,15 @@ config:
   kagentDbHost: kagent-postgresql.krateo-system.svc
   kagentDbPort: 5432
   kagentDbName: kagent
+  # WHAT PEOPLE ASKED. The text of USER-AUTHORED messages (never agent replies or tool output) from
+  # sessions active in the window, redacted before it reaches the prompt. All-users, like the metadata,
+  # so the role in secrets.kagentDb needs SELECT on `event` as well as `session`. Bounded per session
+  # and in total; a cut is recorded on the run (truncated, droppedMessages, droppedSessions).
+  # maxSessions: 0 turns the read off.
+  kagentQuestions:
+    maxSessions: 40
+    maxMessagesPerSession: 6
+    maxCharsPerSession: 1500
   clickhouseUrl: ""
   evidenceMaxChars: 60000
   # TWO CLOCKS. a2aTimeoutSeconds is the TOTAL budget for one question and bounds the run; the read
@@ -75,11 +125,13 @@ secrets:
   # only asks, by creating a BuilderPublish claim.
   clickhouse: { name: "", userKey: username, passwordKey: password }
 
-  # kagent's Postgres, read for session METADATA across every user. The role named here is expected to
-  # hold SELECT on `session` and nothing else: conversation content lives in event.data and task, and the
-  # role is explicitly REVOKEd on both. That narrowness is a database privilege, not something this chart
-  # can enforce — verify it where the role is created (session=t, event=f, task=f) rather than trusting
-  # these keys. Empty name => the source reports not-configured and the run is PartiallyCompleted, which
+  # kagent's Postgres, read across every user: session METADATA, and the text of user-authored messages
+  # (config.kagentQuestions). The role named here is expected to hold SELECT on `session` and `event` and
+  # nothing else; it stays REVOKEd on `task`. `event` also holds agent replies and tool output, which the
+  # query leaves out and the code re-checks — the grant cannot draw that line, so it is drawn twice in
+  # code instead. Verify the grant where the role is created (session=t, event=t, task=f) rather than
+  # trusting these keys. A role still revoked on `event` keeps the metadata working and makes the run
+  # PartiallyCompleted with the permission error, rather than a quiet night. Empty name => the source reports not-configured and the run is PartiallyCompleted, which
   # is the honest state rather than a silent skip.
   kagentDb:
     name: ""

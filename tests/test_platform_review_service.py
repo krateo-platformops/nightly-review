@@ -85,9 +85,9 @@ def test_the_subject_does_not_change_the_fingerprint():
 
 class _Api:
     """Enough of CustomObjectsApi to drive open_index / create / supersede, recording every write."""
-    def __init__(self, proposals=(), alerts=(), agents=()):
+    def __init__(self, proposals=(), alerts=(), agents=(), flexes=()):
         self.proposals = {p["metadata"]["name"]: p for p in proposals}
-        self.alerts, self.agents = list(alerts), list(agents)
+        self.alerts, self.agents, self.flexes = list(alerts), list(agents), list(flexes)
         self.status_writes, self.creates, self.spec_patches = [], [], []
 
     def list_namespaced_custom_object(self, group, version, ns, plural):
@@ -95,6 +95,8 @@ class _Api:
             return {"items": list(self.proposals.values())}
         if plural == "alerts":
             return {"items": self.alerts}
+        if plural == "flexes":
+            return {"items": self.flexes}
         return {"items": []}
 
     def list_cluster_custom_object(self, group, version, plural):
@@ -391,7 +393,10 @@ def full_run(monkeypatch):
     api = _Api(proposals=[old, _stored("p-legacy")],
                alerts=[{"metadata": {"name": "a"}, "spec": {"displayName": "A", "threshold": 1}}],
                agents=[{"metadata": {"namespace": "krateo-system", "name": "never-used"}},
-                       {"metadata": {"namespace": "krateo-system", "name": "busy"}}])
+                       {"metadata": {"namespace": "krateo-system", "name": "busy"}}],
+               flexes=[{"metadata": {"name": "page-dashboard",
+                                     "annotations": {"krateo.io/nav-path": "/dashboard"}}},
+                       {"metadata": {"name": "dashboard-row-1"}}])
     monkeypatch.setattr(M.config, "load_incluster_config", lambda: None)
     monkeypatch.setattr(M.client, "CustomObjectsApi", lambda: api)
     monkeypatch.setattr(M, "DRY_RUN", False)
@@ -404,11 +409,22 @@ def full_run(monkeypatch):
     ok = types.SimpleNamespace(raise_for_status=lambda: None, text='["svc", 5]\n["svc2", 3]\n')
     monkeypatch.setattr(E, "requests", types.SimpleNamespace(post=lambda *a, **k: ok))
 
-    # kagent sessions through a fake pg8000, with one busy agent and one deployed-never-used.
+    # kagent sessions through a fake pg8000, with one busy agent and one deployed-never-used — and the
+    # questions read on its richest path: a matched question, an unparseable row, more messages in the
+    # session than the cap, so questions/shapes/droppedMessages are all written and all checked.
     now = dt.datetime.now(dt.timezone.utc)
     rows = [("krateo_system__NS__busy", 40, 4, 3, now), ("krateo_system__NS__gone", 2, 0, 1,
                                                           now - dt.timedelta(days=30))]
-    conn = types.SimpleNamespace(run=lambda *a, **k: rows, close=lambda: None)
+    q = '{"Author": "user", "Content": {"role": "user", "parts": [{"text": "why is my composition not ready?"}]}}'
+    qrows = [("s1", "krateo_system__NS__busy", q, 9), ("s1", "krateo_system__NS__busy", "not json", 9)]
+
+    def run(sql, **k):
+        if "WITH q AS" in sql:
+            return qrows
+        if "AS user_authored" in sql:
+            return [(20, 9, 2, 2)]
+        return rows
+    conn = types.SimpleNamespace(run=run, close=lambda: None)
     native = types.SimpleNamespace(Connection=lambda **k: conn)
     monkeypatch.setitem(sys.modules, "pg8000", types.SimpleNamespace(native=native))
     monkeypatch.setitem(sys.modules, "pg8000.native", native)
@@ -442,6 +458,9 @@ def test_every_reviewrun_status_the_service_writes_is_declared(full_run):
     # The run exercised what it is meant to, or this test proves nothing.
     assert final["evidence"]["clickhouse"]["queries"], "queries were not written, so not tested"
     assert final["evidence"]["clickhouse"]["truncated"] is True
+    ks = final["evidence"]["kagent-sessions"]
+    assert ks["questions"] == 1 and ks["shapes"]["unparseable"] == 1 and ks["droppedMessages"] > 0, ks
+    assert final["evidence"]["kubernetes"]["returned"] == 2, "an Alert and one page root"
     assert final["summary"] and final["model"]["inputTokens"] == 9
     assert [s["name"] for s in final["steps"]] == ["gather", "ask", "validate", "publish", "record"]
     assert final["proposals"]["superseded"] == 1

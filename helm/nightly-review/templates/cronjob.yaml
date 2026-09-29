@@ -73,17 +73,30 @@ spec:
                   valueFrom:
                     secretKeyRef: { name: {{ . }}, key: {{ $.Values.secrets.clickhouse.passwordKey }} }
                 {{- end }}
-                {{- /* kagent's Postgres, for session METADATA across all users. The credential is
-                       expected to be a role granted SELECT on `session` and nothing else — content
-                       lives in event.data and task, which that role is revoked on. The narrowness is
-                       enforced by the grant, not by this chart, so it must be verified where the role
-                       is created (session=t, event=f, task=f) and not assumed from these keys. */}}
+                {{- /* kagent's Postgres, across all users: session METADATA, and the text of
+                       user-authored messages. The credential is expected to be a role granted SELECT on
+                       `session` and `event` and nothing else — still revoked on `task`. The narrowness
+                       is enforced by the grant, not by this chart, so it must be verified where the role
+                       is created (session=t, event=t, task=f) and not assumed from these keys. */}}
                 - name: KAGENT_DB_HOST
                   value: {{ .Values.config.kagentDbHost | quote }}
                 - name: KAGENT_DB_PORT
                   value: {{ .Values.config.kagentDbPort | quote }}
                 - name: KAGENT_DB_NAME
                   value: {{ .Values.config.kagentDbName | quote }}
+                - name: KAGENT_QUESTIONS_MAX_SESSIONS
+                  value: {{ .Values.config.kagentQuestions.maxSessions | quote }}
+                - name: KAGENT_QUESTIONS_PER_SESSION
+                  value: {{ .Values.config.kagentQuestions.maxMessagesPerSession | quote }}
+                - name: KAGENT_QUESTIONS_CHARS_PER_SESSION
+                  value: {{ .Values.config.kagentQuestions.maxCharsPerSession | quote }}
+                {{- /* The reviewer's own sessions carry last night's corpus as their user turn; read
+                       back, they would feed the review its own input. Only the agent this chart creates
+                       is known here — a reviewer brought via reviewerA2aUrl is not excluded. */}}
+                {{- if .Values.reviewer.create }}
+                - name: KAGENT_QUESTIONS_EXCLUDE_AGENTS
+                  value: {{ printf "%s/%s" .Release.Namespace .Values.reviewer.name | quote }}
+                {{- end }}
                 {{- with .Values.secrets.kagentDb.name }}
                 - name: KAGENT_DB_USER
                   valueFrom:

@@ -103,8 +103,8 @@ feeds.
 | source | how | why that way |
 |---|---|---|
 | ClickHouse | fixed SQL from chart values, `{from}`/`{to}` bound to the window | a model is never asked to author SQL against a store that has held live credentials; an unwindowed query is refused |
-| kagent sessions | session **metadata** from kagent's Postgres, with a role granted SELECT on `session` only | reports which deployed agents are idle or never used; aggregate counts only, no user ids, no message bodies (the role is revoked on `event` and `task`) |
-| existing Alerts | Kubernetes API | so it proposes gaps rather than duplicates |
+| kagent sessions | session **metadata**, and the text of **user-authored** messages in the window, from kagent's Postgres, with a role granted SELECT on `session` and `event` (revoked on `task`) | reports which deployed agents are idle or never used, and what people asked, so a question asked again and again with no written answer becomes a Documentation proposal. All users; the run records `scope` saying so. Questions only, never agent replies or tool output; redacted before the prompt; capped per conversation and in total, with every cut recorded (`truncated`, `droppedMessages`, `droppedSessions`); no user ids. `shapes` counts how the stored events parsed, so an unreadable corpus fails the source instead of reading as a quiet night |
+| existing Alerts and pages | Kubernetes API: Alerts, and page roots (Flex widgets named `page-*`; there is no Page kind), each read failing on its own | so it proposes gaps rather than duplicates |
 
 The review window is bounded, and that is a safety control rather than a cost one: spans ingested
 before the collector's JWT redaction landed can still carry live credentials.

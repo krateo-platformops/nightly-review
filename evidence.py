@@ -11,6 +11,7 @@ run becomes PartiallyCompleted. It is never dropped silently, because a proposal
 evidence must be readable as such.
 """
 import datetime as dt
+import json
 import os
 
 import requests
@@ -21,7 +22,8 @@ CLICKHOUSE_URL = os.environ.get("CLICKHOUSE_URL", "")
 CLICKHOUSE_USER = os.environ.get("CLICKHOUSE_USER", "")
 CLICKHOUSE_PASSWORD = os.environ.get("CLICKHOUSE_PASSWORD", "")
 KAGENT_API = os.environ.get("KAGENT_API_URL", "http://kagent-controller.krateo-system.svc:8083")
-# kagent's Postgres, read with a role granted SELECT on `session` AND NOTHING ELSE. See kagent_sessions.
+# kagent's Postgres, read with a role granted SELECT on `session` and `event` AND NOTHING ELSE. See
+# kagent_sessions and QUESTIONS_SQL.
 KAGENT_DB_HOST = os.environ.get("KAGENT_DB_HOST", "kagent-postgresql.krateo-system.svc")
 KAGENT_DB_PORT = int(os.environ.get("KAGENT_DB_PORT", "5432"))
 KAGENT_DB_NAME = os.environ.get("KAGENT_DB_NAME", "kagent")
@@ -42,9 +44,11 @@ def _cap(text, stats=None):
     if len(text) <= MAX_CHARS:
         return text
     if stats is not None:
+        # ADDED TO, not overwritten: kagent-sessions may already have recorded characters it cut per
+        # session before the source as a whole reached this cap, and both are "what the model never saw".
         stats["truncated"] = True
         stats["truncatedAtChars"] = MAX_CHARS
-        stats["droppedChars"] = len(text) - MAX_CHARS
+        stats["droppedChars"] = stats.get("droppedChars", 0) + len(text) - MAX_CHARS
     return text[:MAX_CHARS] + f"\n... [truncated at {MAX_CHARS} chars]"
 
 
@@ -131,7 +135,8 @@ def clickhouse(queries, window):
 #     deleted, which their own API would never show them;
 #   - count(DISTINCT user_id) and NEVER user_id itself, because this corpus reaches a model and from
 #     there a pull request body, and aggregate counts answer the question without naming real people;
-#   - `session` and no other table, so it does not even ask for the content tables the role is revoked on.
+#   - `session` and no other table. Message text is read by QUESTIONS_SQL below, separately and on
+#     purpose, so the agent census never depends on the content read succeeding.
 SESSION_SQL = """
     SELECT coalesce(agent_id, '(none)')                       AS agent,
            count(*)                                            AS all_time,
@@ -145,6 +150,200 @@ SESSION_SQL = """
      ORDER BY last_seen DESC NULLS LAST
      LIMIT :lim
 """
+
+# WHAT PEOPLE ASKED, which is the one thing this service exists to notice and the one thing metadata
+# cannot carry: "a question asked repeatedly whose answer is not written down" needs the questions.
+# Read from the SAME Postgres, as the SAME all-users role, as SESSION_SQL — not through kagent's HTTP
+# API, which scopes /api/sessions to the caller and would show this service only its own identity's
+# conversations, i.e. none of anybody's questions. The role therefore needs SELECT on `event` as well as
+# `session`, and still nothing on `task`.
+#
+# ONLY USER-AUTHORED EVENTS. Agent replies and tool output are left out on purpose: they are the bulk of
+# the table, they are where logs, manifests and credentials pasted back by tools live, and what is
+# worth reviewing is the question — the answer the agent gave is exactly what a proposal would change.
+# Two things decide "user-authored", both from kagent 0.10.1's source because the stored shape is
+# pinned nowhere readable:
+#   - event.data is the ADK Event serialised whole. The Python runtime writes model_dump_json()
+#     (`"author":"user"`); the Go runtime json.Marshal's adk-go's session.Event, whose Author field
+#     carries NO json tag (`"Author":"user"`). 13 of 16 agents on 057 run the Go runtime, so both are
+#     matched. A tool's reply is authored by the agent, even though its content role is "user".
+#   - session.source = 'agent' marks a session a PARENT AGENT opened over A2A; its "user" turns are a
+#     model's delegation prompt, not a person's question.
+# The LIKE is a prefilter to keep agent output off the wire, never the decision — _question_text
+# re-reads every row, and QUESTIONS_CENSUS_SQL counts what the prefilter left behind, so a renamed
+# field shows up as events-with-no-questions rather than as a quiet night.
+#
+# BOUNDED THREE WAYS IN THE DATABASE: the review window (event.created_at), a message cap per session
+# (row_number), and a session cap (LIMIT over the most recently active). Characters are capped per
+# session in Python, after redaction. No user_id is selected, and a session is named to the model by a
+# per-run ordinal rather than its id.
+_USER_AUTHORED = """(e.data LIKE '%"author":"user"%' OR e.data LIKE '%"Author":"user"%')"""
+_ELIGIBLE = """
+      FROM event e
+      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id
+     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL
+       AND e.created_at >= :frm AND e.created_at <= :to
+       -- Implied by the line above (an insert bumps its session's updated_at), and here because
+       -- `event` has no index on created_at: this lets the planner start from the few sessions active
+       -- in the window and reach their events through idx_event_session_id, instead of scanning a
+       -- table that has filled a PVC on this platform before.
+       AND s.updated_at >= :frm
+       AND s.source IS DISTINCT FROM 'agent'
+       AND NOT (coalesce(s.agent_id, '') = ANY(string_to_array(:excluded, ',')))
+"""
+QUESTIONS_SQL = f"""
+    WITH q AS (
+    SELECT e.session_id,
+           coalesce(s.agent_id, '(none)')                                           AS agent,
+           e.created_at,
+           e.data,
+           row_number() OVER (PARTITION BY e.session_id ORDER BY e.created_at)      AS n,
+           count(*)     OVER (PARTITION BY e.session_id)                            AS in_session,
+           max(e.created_at) OVER (PARTITION BY e.session_id)                       AS last_at
+    {_ELIGIBLE}
+       AND {_USER_AUTHORED}
+    )
+    SELECT session_id, agent, data, in_session
+      FROM q
+     WHERE n <= :per
+       AND session_id IN (SELECT session_id FROM q GROUP BY session_id
+                           ORDER BY max(last_at) DESC LIMIT :sessions)
+     ORDER BY last_at DESC, session_id, created_at
+"""
+# The denominator. Without it "no questions" cannot be told apart from "questions in a shape we no
+# longer recognise": both return zero rows from QUESTIONS_SQL.
+QUESTIONS_CENSUS_SQL = f"""
+    SELECT count(*)                                              AS events,
+           count(*) FILTER (WHERE {_USER_AUTHORED})              AS user_authored,
+           count(DISTINCT e.session_id) FILTER (WHERE {_USER_AUTHORED}) AS sessions,
+           count(DISTINCT e.session_id)                          AS active
+    {_ELIGIBLE}
+"""
+QUESTIONS_MAX_SESSIONS = int(os.environ.get("KAGENT_QUESTIONS_MAX_SESSIONS", "40"))
+QUESTIONS_PER_SESSION = int(os.environ.get("KAGENT_QUESTIONS_PER_SESSION", "6"))
+QUESTIONS_CHARS_PER_SESSION = int(os.environ.get("KAGENT_QUESTIONS_CHARS_PER_SESSION", "1500"))
+# The reviewer's OWN sessions. Its user turn is last night's whole evidence corpus, so reading it back
+# would feed the review its own previous input and crowd out every real question. "namespace/name",
+# comma-separated; the chart sets it to the reviewer agent it creates.
+QUESTIONS_EXCLUDE_AGENTS = os.environ.get("KAGENT_QUESTIONS_EXCLUDE_AGENTS", "")
+
+
+def _agent_key(ns_name):
+    """kagent's agent_id: ConvertToPythonIdentifier(namespace + "/" + name)."""
+    return ns_name.strip().replace("-", "_").replace("/", "__NS__")
+
+
+def _question_text(data):
+    """The text of one stored event IF a person wrote it. Returns (text, shape).
+
+    shape is one of four, and they are kept apart because they mean different things:
+      matched      a user-authored event with text — a question
+      unmatched    valid JSON that is not a user's text: a HITL approval (a function_response the user
+                   authored), a thought, or a shape this reader does not know
+      unparseable  not a JSON object at all
+      empty        no payload
+    Lumping unparseable into empty would hide a decoding problem behind legitimately empty events, and
+    lumping unmatched into matched-with-no-text is how a renamed field reads as a quiet night."""
+    if data is None or (isinstance(data, str) and not data.strip()):
+        return "", "empty"
+    try:
+        ev = json.loads(data) if isinstance(data, str) else data
+    except (ValueError, TypeError):
+        return "", "unparseable"
+    if not isinstance(ev, dict):
+        return "", "unparseable"
+    # Python runtime: snake_case pydantic dump. Go runtime: untagged exported fields, so Author and
+    # Content are capitalised while genai.Content's own tags keep `parts`/`role`/`text` lowercase.
+    author = ev.get("author", ev.get("Author"))
+    content = ev.get("content", ev.get("Content"))
+    if author != "user" or not isinstance(content, dict):
+        return "", "unmatched"
+    texts = [p["text"] for p in (content.get("parts") or [])
+             if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
+             and not p.get("thought")]
+    if not texts:
+        return "", "unmatched"
+    return "\n".join(t.strip() for t in texts), "matched"
+
+
+def _read_questions(conn, window, stats):
+    """The questions block's lines, with the question stats filled in as a side effect — before any
+    raise, so a failed read still records the shapes that explain it. Raises on a database error or an
+    unreadable corpus, so the caller can degrade the source without losing the metadata half."""
+    if QUESTIONS_MAX_SESSIONS <= 0:
+        stats["note"] = "question reading disabled (maxSessions: 0)"
+        return []
+    excluded = ",".join(_agent_key(a) for a in QUESTIONS_EXCLUDE_AGENTS.split(",") if a.strip())
+    args = {"frm": window["from"], "to": window["to"], "excluded": excluded}
+    ((events, user_authored, sessions, active),) = conn.run(QUESTIONS_CENSUS_SQL, **args)
+    rows = conn.run(QUESTIONS_SQL, per=QUESTIONS_PER_SESSION, sessions=QUESTIONS_MAX_SESSIONS, **args)
+
+    shapes = {"matched": 0, "unmatched": 0, "unparseable": 0, "empty": 0,
+              # Everything the prefilter left in the database: agent replies, tool calls and results.
+              "notUserAuthored": max(0, (events or 0) - (user_authored or 0))}
+    by_session, order, in_session = {}, [], {}
+    for session_id, agent, data, total in rows:
+        text, shape = _question_text(data)
+        shapes[shape] += 1
+        if session_id not in by_session:
+            by_session[session_id], in_session[session_id] = (agent, []), total
+            order.append(session_id)
+        if text:
+            by_session[session_id][1].append(text)
+
+    lines, quoted, dropped_msgs, dropped_chars = [], 0, 0, 0
+    for i, sid in enumerate(order, 1):
+        agent, texts = by_session[sid]
+        dropped_msgs += max(0, in_session[sid] - QUESTIONS_PER_SESSION)
+        budget, out = QUESTIONS_CHARS_PER_SESSION, []
+        for t in texts:
+            # REDACT BEFORE CUTTING. A token cut in half by the budget is no longer long enough to match
+            # its pattern, so truncating first would hand the model the first half of a credential.
+            t = redact(t)
+            if budget <= 0:
+                dropped_msgs += 1
+                dropped_chars += len(t)
+                continue
+            if len(t) > budget:
+                dropped_chars += len(t) - budget
+                t = t[:budget] + " …[cut]"
+            budget -= len(t)
+            out.append("    > " + t.replace("\n", "\n      "))
+        if out:
+            quoted += len(out)
+            lines.append(f"  - conversation {i} with {agent}:")
+            lines.extend(out)
+    dropped_sessions = max(0, (sessions or 0) - len(order))
+
+    stats["questions"] = quoted
+    stats["questionSessions"] = len(order)
+    stats["shapes"] = shapes
+    if dropped_msgs or dropped_chars or dropped_sessions:
+        # The fields every source already uses for "the model did not see all of it".
+        stats["truncated"] = True
+        stats["droppedChars"] = stats.get("droppedChars", 0) + dropped_chars
+        stats["droppedMessages"] = dropped_msgs
+        stats["droppedSessions"] = dropped_sessions
+    # AN UNREADABLE CORPUS MUST NOT LOOK LIKE A QUIET NIGHT. People talked to agents inside the window
+    # and not one question came out: either the stored shape changed or the prefilter no longer
+    # matches it. Either way the reader is broken, and the run must say so.
+    if events and not shapes["matched"]:
+        raise RuntimeError(f"{events} event(s) in the window but no question recognised "
+                           f"(shapes {shapes}); the stored event shape may have changed")
+    # THE PARTIAL VERSION OF THE SAME FAILURE. Two runtimes write two spellings; if one of them changes,
+    # the other still matches and the total above never reaches zero — a night would quietly lose every
+    # conversation with, on 057, 13 of 16 agents. A conversation active in the window with no question
+    # in it happens only at the window's edge, so when that is most of them, say so. A note, not an
+    # error: it is a suspicion, and the questions that WERE read are real.
+    silent = (active or 0) - (sessions or 0)
+    if silent and silent * 2 >= (active or 0):
+        stats["note"] = (f"{silent} of {active} conversation(s) active in the window had no recognisable "
+                         f"question — one runtime's stored event shape may have changed")
+    if not lines:
+        return []
+    return [f"- QUESTIONS PEOPLE ASKED in this window ({quoted} quoted from {len(order)} conversation(s), "
+            f"user-authored only, redacted):"] + lines
+
 
 def kagent_sessions(api, window, limit=200):
     """Which agents are being USED, and — the part that matters — which are not.
@@ -172,6 +371,9 @@ def kagent_sessions(api, window, limit=200):
     ConvertToPythonIdentifier(namespace + "/" + name), so krateo-system/tk-swarm-ro becomes
     krateo_system__NS__tk_swarm_ro and the two sides can be matched. On 057 that difference is exactly
     one agent, deployed and never once used, invisible to every version of this query that did not look.
+
+    AND WHAT PEOPLE ASKED, on the same connection and after the census: see QUESTIONS_SQL. That half
+    fails on its own, so a role still revoked on `event` costs the questions and not the census.
     """
     if not (KAGENT_DB_USER and KAGENT_DB_PASSWORD):
         return None, {"ok": False, "error": "kagent DB credentials not configured (KAGENT_DB_USER/PASSWORD)"}
@@ -181,12 +383,19 @@ def kagent_sessions(api, window, limit=200):
         return None, {"ok": False, "error": f"pg8000 unavailable: {exc}"}
 
     conn = None
+    questions, questions_err, qstats = [], None, {}
     try:
         conn = pg8000.native.Connection(
             user=KAGENT_DB_USER, password=KAGENT_DB_PASSWORD, host=KAGENT_DB_HOST,
             port=KAGENT_DB_PORT, database=KAGENT_DB_NAME, timeout=30,
         )
         rows = conn.run(SESSION_SQL, frm=window["from"], to=window["to"], lim=limit)
+        # THE QUESTIONS FAIL ON THEIR OWN. A role still revoked on `event`, or a shape this reader no
+        # longer recognises, must cost the questions and not the idle/never-used findings beside them.
+        try:
+            questions = _read_questions(conn, window, qstats)
+        except Exception as exc:                              # noqa: BLE001
+            questions_err = redact(f"questions: {exc}")[:300]
     except Exception as exc:                                  # noqa: BLE001
         return None, {"ok": False, "error": redact(f"session query: {exc}")[:300]}
     finally:
@@ -200,7 +409,7 @@ def kagent_sessions(api, window, limit=200):
     try:
         for a in (api.list_cluster_custom_object("kagent.dev", "v1alpha1", "agents").get("items") or []):
             ns, nm = a["metadata"]["namespace"], a["metadata"]["name"]
-            deployed[f"{ns}/{nm}".replace("-", "_").replace("/", "__NS__")] = f"{ns}/{nm}"
+            deployed[_agent_key(f"{ns}/{nm}")] = f"{ns}/{nm}"
     except Exception as exc:                                  # noqa: BLE001
         deployed_err = str(exc)[:160]
 
@@ -247,33 +456,88 @@ def kagent_sessions(api, window, limit=200):
         lines.append(f"- NOTE: the deployed-agent list could not be read ({deployed_err}), so "
                      f"'never used' could not be computed; idle/active figures are unaffected")
 
+    # The questions go AFTER the agent findings: absence first, then what the present users asked.
+    lines += questions
+
     stats = {"ok": True, "queried": 1, "returned": len(rows),
              "agentsDeployed": len(deployed) or None, "agentsNeverUsed": len(never),
              "agentsIdle7d": len(stale), "agentsActiveInWindow": len(active),
-             "scope": "all-users metadata (SELECT on session only; cannot read event/task)"}
-    if deployed_err:
-        stats["note"] = f"deployed-agent list unreadable: {deployed_err}"
+             "scope": ("all-users: session metadata, and the text of USER-AUTHORED messages inside the "
+                       "window, redacted (SELECT on session and event; never task, never user ids)")}
+    notes = [qstats.pop("note", None),
+             f"deployed-agent list unreadable: {deployed_err}" if deployed_err else None]
+    stats |= qstats
+    if questions_err:
+        # DEGRADED, NOT BLANKED. The metadata half still answers; ok:false is what makes the run
+        # PartiallyCompleted, because a review that meant to read the questions and could not is a
+        # half-finished review, and the record must not read like a quiet night.
+        stats["ok"] = False
+        stats["error"] = questions_err
+    if any(notes):
+        stats["note"] = "; ".join(n for n in notes if n)
     if not lines:
         stats |= {"empty": True, "note": "no kagent agents and no sessions found at all"}
         return None, stats
-    return _cap(redact("\n".join(lines))), stats
+    return _cap(redact("\n".join(lines)), stats), stats
+
+
+# Bounds for the page list. 057 carries 33 page roots in krateo-system against 184 Flex widgets and 553
+# widget CRs in all; the roots are what a proposal would duplicate, and the rest would crowd out the
+# telemetry the proposals are supposed to come from.
+MAX_PAGES = int(os.environ.get("EVIDENCE_MAX_PAGES", "100"))
 
 
 def kubernetes(api):
-    """What the platform ALREADY notices, so the agent proposes gaps rather than duplicates.
+    """What the platform ALREADY has, so the agent proposes gaps rather than duplicates.
 
     Without this the most likely proposal every night is an alert for something already alerted on —
-    the model cannot know what exists unless it is shown."""
-    try:
-        alerts = api.list_namespaced_custom_object(
-            "observability.krateo.io", "v1alpha1", os.environ.get("NAMESPACE", "krateo-system"), "alerts"
-        ).get("items", [])
-        lines = [f"- existing Alert {a['metadata']['name']}: "
-                 f"{(a.get('spec') or {}).get('displayName', '')!r} "
-                 f"threshold={(a.get('spec') or {}).get('threshold')} "
-                 f"{(a.get('spec') or {}).get('thresholdType', '')}"
-                 for a in alerts]
-        st = {"ok": True, "queried": 1, "returned": len(alerts)}
-        return _cap("\n".join(lines), st), st
-    except Exception as exc:                                  # noqa: BLE001
-        return None, {"ok": False, "error": f"alerts: {exc}"}
+    the model cannot know what exists unless it is shown. The same holds for Widget proposals, which is
+    why page roots are listed too: "add a page showing X" for a page that already shows X is the Widget
+    kind's version of the duplicate alert.
+
+    EACH READ FAILS ON ITS OWN. A cluster without one of these kinds is a normal condition, so a read
+    that errors is recorded and the others still answer; the source is degraded, never blanked by it."""
+    ns = os.environ.get("NAMESPACE", "krateo-system")
+    blocks, st = [], {"ok": True, "queried": 0, "returned": 0}
+
+    def _read(what, group, version, plural, render, keep=lambda i: True, cap=None):
+        try:
+            items = [i for i in api.list_namespaced_custom_object(group, version, ns, plural)
+                     .get("items", []) if keep(i)]
+        except Exception as exc:                              # noqa: BLE001
+            st["ok"] = False
+            st["error"] = st.get("error", "") + f"{what}: {str(exc)[:160]}; "
+            return
+        st["queried"] += 1
+        st["returned"] += len(items)
+        items.sort(key=lambda i: i["metadata"]["name"])
+        shown = items[:cap] if cap else items
+        lines = [render(i) for i in shown]
+        if len(items) > len(shown):
+            lines.append(f"- ... and {len(items) - len(shown)} more {what} not listed")
+            st["note"] = st.get("note", "") + f"{what}: listed {len(shown)} of {len(items)}; "
+        if lines:
+            blocks.append("\n".join(lines))
+
+    _read("alerts", "observability.krateo.io", "v1alpha1", "alerts",
+          lambda a: (f"- existing Alert {a['metadata']['name']}: "
+                     f"{(a.get('spec') or {}).get('displayName', '')!r} "
+                     f"threshold={(a.get('spec') or {}).get('threshold')} "
+                     f"{(a.get('spec') or {}).get('thresholdType', '')}"))
+
+    # THERE IS NO Page KIND. templates.krateo.io serves only restactions; a portal page IS a Flex widget
+    # whose name begins with "page-", and its route is the krateo.io/nav-path annotation when it has one.
+    # Listed in this namespace only, which is also what keeps krateo-preview's 99 draft page roots on 057
+    # out of the corpus: those are previews, not pages anyone can reach.
+    _read("pages", "widgets.templates.krateo.io", "v1beta1", "flexes",
+          lambda f: (f"- existing Page {f['metadata']['name']}"
+                     + (f" at {nav}" if (nav := (f['metadata'].get('annotations') or {})
+                                          .get('krateo.io/nav-path')) else "")),
+          keep=lambda f: f["metadata"]["name"].startswith("page-"), cap=MAX_PAGES)
+
+    if not blocks:
+        if st["ok"]:
+            # Read and found nothing: explained emptiness, which main.py does not count as degraded.
+            st |= {"empty": True, "note": f"no Alerts and no page roots in {ns}"}
+        return None, st
+    return _cap("\n".join(blocks), st), st

@@ -51,9 +51,14 @@
     "clickhouseQueries": {
       "type": "object",
       "title": "Evidence queries",
-      "description": "Named SQL as configuration rather than code, so it is reviewable and adaptable without a new image. {from}/{to} are substituted; nothing else is.",
+      "description": "Named SQL as configuration rather than code, so it is reviewable and adaptable without a new image. {from}/{to} are substituted as 'YYYY-MM-DD HH:MM:SS' UTC; nothing else is, and a query without both is refused. The defaults aggregate over the schema Krateo writes (otel_logs; SeverityText is always empty here, so severity is matched in Body; Kubernetes events are ResourceAttributes['telemetry.source']='k8s-events' with the event as JSON in Body). A key set here replaces the default of that name.",
       "additionalProperties": {
         "type": "string"
+      },
+      "default": {
+        "errorPatternsByService": "SELECT ServiceName,\n       ResourceAttributes['k8s.namespace.name'] AS ns,\n       count() AS n\nFROM otel_logs\nWHERE Timestamp BETWEEN '{from}' AND '{to}'\n  AND ResourceAttributes['telemetry.source'] = ''\n  AND (position(Body, 'ERROR') > 0 OR position(Body, 'error') > 0\n       OR position(Body, 'Failed') > 0 OR position(Body, 'panic') > 0)\nGROUP BY ServiceName, ns\nORDER BY n DESC\nLIMIT 25\n",
+        "kubernetesEventReasons": "SELECT JSONExtractString(Body, 'object', 'reason') AS reason,\n       JSONExtractString(Body, 'object', 'kind')   AS kind,\n       count() AS n\nFROM otel_logs\nWHERE Timestamp BETWEEN '{from}' AND '{to}'\n  AND ResourceAttributes['telemetry.source'] = 'k8s-events'\n  AND reason != ''\nGROUP BY reason, kind\nORDER BY n DESC\nLIMIT 25\n",
+        "logVolumeByService": "SELECT ServiceName, count() AS n\nFROM otel_logs\nWHERE Timestamp BETWEEN '{from}' AND '{to}'\nGROUP BY ServiceName\nORDER BY n DESC\nLIMIT 25\n"
       }
     },
     "config": {
@@ -100,6 +105,37 @@
           "type": "string",
           "default": "https://api.github.com",
           "description": "GitHub API base used to check, anonymously, that each proposal's target.repo exists (recorded as the TargetResolved condition; never a reason to drop a proposal). A private repository answers 404 exactly like a missing one. Empty disables the check."
+        },
+        "kagentQuestions": {
+          "type": "object",
+          "additionalProperties": false,
+          "title": "What people asked",
+          "description": "Reads the text of USER-AUTHORED messages (never agent replies or tool output) from kagent sessions active in the review window, for every user, out of kagent's Postgres; redacted before it reaches the prompt. Requires SELECT on `event` for the secrets.kagentDb role. Bounded per session and in total, and every cut is recorded on the run. maxSessions 0 turns it off.",
+          "properties": {
+            "maxSessions": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 40,
+              "description": "Most recently active conversations read. 0 disables the read."
+            },
+            "maxMessagesPerSession": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 6,
+              "description": "User messages read per conversation, oldest first inside the window."
+            },
+            "maxCharsPerSession": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1500,
+              "description": "Characters quoted per conversation, counted after redaction."
+            }
+          },
+          "default": {
+            "maxSessions": 40,
+            "maxMessagesPerSession": 6,
+            "maxCharsPerSession": 1500
+          }
         }
       }
     },
@@ -125,7 +161,7 @@
         "kagentDb": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Credential for kagent's Postgres, read for session METADATA across every user. The role named here must hold SELECT on `session` and nothing else: conversation content lives in event.data and task, and the role is explicitly REVOKEd on both. That narrowness is a database privilege, NOT something this chart enforces \u2014 verify it where the role is created (session=t, event=f, task=f). No `default` on any leaf here, deliberately: an empty name must mean not-configured so the source reports it and the run is PartiallyCompleted, rather than a default silently standing in.",
+          "description": "Credential for kagent's Postgres, read across every user: session METADATA, and the text of user-authored messages (config.kagentQuestions). The role named here must hold SELECT on `session` and `event` and nothing else; it stays REVOKEd on `task`. `event` also holds agent replies and tool output, which the query leaves out and the code re-checks \u2014 the grant cannot draw that line. That narrowness is a database privilege, NOT something this chart enforces \u2014 verify it where the role is created (session=t, event=t, task=f). A role still revoked on `event` keeps the metadata and makes the run PartiallyCompleted. No `default` on any leaf here, deliberately: an empty name must mean not-configured so the source reports it and the run is PartiallyCompleted, rather than a default silently standing in.",
           "properties": {
             "name": {
               "type": "string"
