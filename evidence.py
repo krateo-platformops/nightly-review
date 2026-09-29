@@ -11,6 +11,7 @@ run becomes PartiallyCompleted. It is never dropped silently, because a proposal
 evidence must be readable as such.
 """
 import datetime as dt
+import fnmatch
 import json
 import os
 import re
@@ -283,7 +284,18 @@ def _read_questions(conn, window, stats):
               # Everything the prefilter left in the database: agent replies, tool calls and results.
               "notUserAuthored": max(0, (events or 0) - (user_authored or 0))}
     by_session, order, in_session = {}, [], {}
+    # BENCHMARK AGENTS NEVER FEED THE REVIEW. The analyse stage already skips `*-bench`
+    # (AGENT_ANALYSIS_EXCLUDE_AGENTS); this read only excluded the reviewer, so a k8s-agent-bench
+    # question reached the main review through this block. Bench traffic is scripted, not a person,
+    # and nothing derived from it may become product content. The patterns are the stage's own,
+    # rewritten into kagent's agent_id form ("*-bench" -> "*_bench") because that is what `agent` holds.
+    bench = [_agent_key(p) for p in os.environ.get("AGENT_ANALYSIS_EXCLUDE_AGENTS", "").split(",") if p.strip()]
+    excluded_sessions = set()
     for session_id, agent, data, total in rows:
+        if bench and any(fnmatch.fnmatchcase(agent or "", p) or fnmatch.fnmatchcase((agent or "").rpartition("__NS__")[2], p)
+                         for p in bench):
+            excluded_sessions.add(session_id)
+            continue
         text, shape = _question_text(data)
         shapes[shape] += 1
         if session_id not in by_session:
