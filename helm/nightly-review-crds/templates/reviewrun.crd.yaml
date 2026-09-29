@@ -90,6 +90,10 @@ spec:
                       returned:  { type: integer }
                       sessions:  { type: integer }
                       createdInWindow: { type: integer }
+                      agentsDeployed:       { type: integer }
+                      agentsNeverUsed:      { type: integer }
+                      agentsIdle7d:         { type: integer }
+                      agentsActiveInWindow: { type: integer }
                       scope:
                         type: string
                         description: >-

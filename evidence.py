@@ -133,48 +133,45 @@ def clickhouse(queries, window):
 #     there a pull request body, and aggregate counts answer the question without naming real people;
 #   - `session` and no other table, so it does not even ask for the content tables the role is revoked on.
 SESSION_SQL = """
-    SELECT coalesce(agent_id, '(none)')              AS agent,
-           count(*)                                  AS sessions,
-           count(DISTINCT user_id)                    AS users,
-           count(*) FILTER (WHERE created_at >= :frm) AS created_in_window,
-           max(updated_at)                            AS latest
+    SELECT coalesce(agent_id, '(none)')                       AS agent,
+           count(*)                                            AS all_time,
+           count(*) FILTER (WHERE updated_at >= :frm
+                              AND updated_at <= :to)           AS in_window,
+           count(DISTINCT user_id)                             AS users,
+           max(updated_at)                                     AS last_seen
       FROM session
      WHERE deleted_at IS NULL
-       AND updated_at >= :frm AND updated_at <= :to
      GROUP BY coalesce(agent_id, '(none)')
-     ORDER BY sessions DESC
+     ORDER BY last_seen DESC NULLS LAST
      LIMIT :lim
 """
 
+def kagent_sessions(api, window, limit=200):
+    """Which agents are being USED, and — the part that matters — which are not.
 
-def kagent_sessions(window, limit=200):
-    """Session METADATA for every user, read from kagent's Postgres — not from its HTTP API.
+    THE FIRST VERSION OF THIS WAS SHAPED WRONG AND THE MODEL CORRECTLY IGNORED IT. It grouped sessions
+    inside the review window, so it reported four healthy agents and a total. That is a census: nothing
+    in it is a problem, so there was nothing to propose. Measured on 057: three sources went to the
+    model, ClickHouse's 60 rows of error patterns were problem-shaped, Kubernetes' 25 existing Alerts
+    were coverage-shaped, and these four rows were neither. Zero proposals cited it.
 
-    WHY NOT THE API, WHICH IS WHAT THIS USED TO DO. kagent 0.10.x scopes /api/sessions to the calling
-    principal and offers no way to widen it: HandleListSessions takes the user id from the JWT and
-    passes it straight to ListSessions, consulting no authorizer, so there is no flag and no permission
-    that could open it. This service therefore saw only sessions it owns, and it owns none — its own A2A
-    traffic is filed under synthetic A2A_USER_<contextId> identities, not under `nightly-review`. The
-    controller's own log for the 02:00 run read `userID: nightly-review, count: 0` while 3,223 sessions
-    existed. The source reported `empty` with a note every night, for a reason that was never going to
-    change on this version. Upstream has since added all_creators behind a SessionAllCreators
-    authorization, but it is unreleased and arrives with the REST route removed, so it is not a bump.
+    WORSE, THE WINDOW DESTROYED THE ONE REAL SIGNAL. Filtering rows by updated_at means an agent idle for
+    three weeks does not appear at all — the very fact that makes it interesting is what excludes it from
+    the result. A GROUP BY over rows that exist can never report absence, and absence is where the
+    findings are. So the window no longer filters; it only marks which agents were active inside it.
 
-    WHY THIS CANNOT READ A CONVERSATION. `session` holds id, user_id, name, created_at, updated_at,
-    deleted_at, agent_id, source — no message bodies. Content lives in `event.data` and in `task`. The
-    role this connects with is granted SELECT on `session` alone and is explicitly REVOKEd on event and
-    task, verified live: session=t, event=f, task=f, feedback=f. So the boundary is a privilege the role
-    does not hold, not a promise this function makes. A later edit that asked for content would get a
-    permission error rather than the content.
+    TWO SIGNALS THAT DIED ON CONTACT WITH THE DATA, recorded so nobody rebuilds them. `source` looked
+    like it would separate human from bench traffic; it holds exactly two values across 3,224 rows,
+    (null) 2128 and 'agent' 1096, and separates nothing. And abandonment as created_at = updated_at
+    occurs ZERO times in 3,224 rows, because a session's first message updates it — a field built on
+    that would have been permanently empty, which is the same dead-check shape as the confidence cap
+    removed in #14.
 
-    WHY IT EMITS COUNTS AND NEVER user_id VALUES. This corpus goes to a model and from there into pull
-    request bodies. Aggregate counts answer what a review needs — which agents are used, how broadly,
-    how much churn — without putting real people's identities into a proposal. `count(DISTINCT user_id)`
-    is the signal; the ids themselves are not.
-
-    It reads across all users by design, which is a deliberate departure from the per-user RBAC the rest
-    of this platform enforces. That is recorded here, in the ReviewRun's `scope`, and in the CRD, so it
-    cannot be discovered later as a surprise.
+    WHY IT READS THE DEPLOYED SET TOO. An agent that has never had a session has no row to group, so the
+    only way to see it is to compare against what is deployed. kagent's agent_id is
+    ConvertToPythonIdentifier(namespace + "/" + name), so krateo-system/tk-swarm-ro becomes
+    krateo_system__NS__tk_swarm_ro and the two sides can be matched. On 057 that difference is exactly
+    one agent, deployed and never once used, invisible to every version of this query that did not look.
     """
     if not (KAGENT_DB_USER and KAGENT_DB_PASSWORD):
         return None, {"ok": False, "error": "kagent DB credentials not configured (KAGENT_DB_USER/PASSWORD)"}
@@ -191,32 +188,64 @@ def kagent_sessions(window, limit=200):
         )
         rows = conn.run(SESSION_SQL, frm=window["from"], to=window["to"], lim=limit)
     except Exception as exc:                                  # noqa: BLE001
-        # Never let the exception text through unredacted: a DSN or password can appear in a driver error.
         return None, {"ok": False, "error": redact(f"session query: {exc}")[:300]}
     finally:
         if conn is not None:
             try: conn.close()
             except Exception: pass                            # noqa: BLE001,S110
 
-    if not rows:
-        # Genuinely empty now MEANS something — no sessions touched in the window — because the source
-        # can see every user's. Unlike the API version, this emptiness is information.
-        return None, {"ok": True, "queried": 1, "returned": 0, "empty": True,
-                      "note": "no kagent sessions were created or updated in the review window; this "
-                              "source reads across all users, so an empty result means no activity, "
-                              "not a scoping artefact",
-                      "scope": "all-users metadata (SELECT on session only; cannot read event/task)"}
+    # The deployed set. A failure here is NOT fatal: the session half still carries the staleness
+    # signal, so degrade to "no deployed-set comparison" and say so rather than losing the whole source.
+    deployed, deployed_err = {}, None
+    try:
+        for a in (api.list_cluster_custom_object("kagent.dev", "v1alpha1", "agents").get("items") or []):
+            ns, nm = a["metadata"]["namespace"], a["metadata"]["name"]
+            deployed[f"{ns}/{nm}".replace("-", "_").replace("/", "__NS__")] = f"{ns}/{nm}"
+    except Exception as exc:                                  # noqa: BLE001
+        deployed_err = str(exc)[:160]
 
-    lines = [f"- agent {r[0]}: {r[1]} sessions, {r[2]} distinct users, "
-             f"{r[3]} created in window, last activity {r[4]}" for r in rows]
-    total_s = sum(r[1] for r in rows)
-    total_new = sum(r[3] for r in rows)
-    lines.insert(0, f"- TOTAL: {total_s} sessions across {len(rows)} agents, {total_new} created in window")
-    return _cap(redact("\n".join(lines))), {
-        "ok": True, "queried": 1, "returned": len(rows), "sessions": total_s,
-        "createdInWindow": total_new,
-        "scope": "all-users metadata (SELECT on session only; cannot read event/task)",
-    }
+    now = dt.datetime.now(dt.timezone.utc)
+    seen, lines = {}, []
+    for agent, all_time, in_window, users, last_seen in rows:
+        idle = None
+        if last_seen is not None:
+            ls = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=dt.timezone.utc)
+            idle = (now - ls).days
+        seen[agent] = (all_time, in_window, users, idle)
+
+    never = sorted(deployed[k] for k in deployed if k not in seen) if deployed else []
+    stale = sorted(((v[3], k) for k, v in seen.items() if v[3] is not None and v[3] >= 7), reverse=True)
+    rare = sorted((v[0], k) for k, v in seen.items() if v[0] <= 3)
+    active = sorted(((v[1], k) for k, v in seen.items() if v[1] > 0), reverse=True)
+
+    # Problems first. The model reads this top-down and the interesting rows must not be buried under a
+    # census of everything that is fine.
+    if never:
+        lines.append(f"- DEPLOYED BUT NEVER USED ({len(never)}): {', '.join(never)} — no session has ever "
+                     f"existed for these; either unreachable, undiscoverable, or no longer wanted")
+    for idle, agent in stale:
+        a, w, u, _ = seen[agent]
+        lines.append(f"- IDLE {idle}d: {agent} — {a} sessions all-time, last activity {idle} days ago, "
+                     f"{w} in this window")
+    for cnt, agent in rare:
+        lines.append(f"- BARELY EVER USED: {agent} — {cnt} session(s) in its entire history")
+    for w, agent in active:
+        a, _, u, idle = seen[agent]
+        lines.append(f"- active: {agent} — {w} sessions in window, {a} all-time, {u} distinct users")
+    if deployed_err:
+        lines.append(f"- NOTE: the deployed-agent list could not be read ({deployed_err}), so "
+                     f"'never used' could not be computed; idle/active figures are unaffected")
+
+    stats = {"ok": True, "queried": 1, "returned": len(rows),
+             "agentsDeployed": len(deployed) or None, "agentsNeverUsed": len(never),
+             "agentsIdle7d": len(stale), "agentsActiveInWindow": len(active),
+             "scope": "all-users metadata (SELECT on session only; cannot read event/task)"}
+    if deployed_err:
+        stats["note"] = f"deployed-agent list unreadable: {deployed_err}"
+    if not lines:
+        stats |= {"empty": True, "note": "no kagent agents and no sessions found at all"}
+        return None, stats
+    return _cap(redact("\n".join(lines))), stats
 
 
 def kubernetes(api):
