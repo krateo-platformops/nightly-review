@@ -11,8 +11,10 @@ run becomes PartiallyCompleted. It is never dropped silently, because a proposal
 evidence must be readable as such.
 """
 import datetime as dt
+import fnmatch
 import json
 import os
+import re
 
 import requests
 
@@ -282,7 +284,18 @@ def _read_questions(conn, window, stats):
               # Everything the prefilter left in the database: agent replies, tool calls and results.
               "notUserAuthored": max(0, (events or 0) - (user_authored or 0))}
     by_session, order, in_session = {}, [], {}
+    # BENCHMARK AGENTS NEVER FEED THE REVIEW. The analyse stage already skips `*-bench`
+    # (AGENT_ANALYSIS_EXCLUDE_AGENTS); this read only excluded the reviewer, so a k8s-agent-bench
+    # question reached the main review through this block. Bench traffic is scripted, not a person,
+    # and nothing derived from it may become product content. The patterns are the stage's own,
+    # rewritten into kagent's agent_id form ("*-bench" -> "*_bench") because that is what `agent` holds.
+    bench = [_agent_key(p) for p in os.environ.get("AGENT_ANALYSIS_EXCLUDE_AGENTS", "").split(",") if p.strip()]
+    excluded_sessions = set()
     for session_id, agent, data, total in rows:
+        if bench and any(fnmatch.fnmatchcase(agent or "", p) or fnmatch.fnmatchcase((agent or "").rpartition("__NS__")[2], p)
+                         for p in bench):
+            excluded_sessions.add(session_id)
+            continue
         text, shape = _question_text(data)
         shapes[shape] += 1
         if session_id not in by_session:
@@ -478,7 +491,68 @@ def kagent_sessions(api, window, limit=200):
     if not lines:
         stats |= {"empty": True, "note": "no kagent agents and no sessions found at all"}
         return None, stats
-    return _cap(redact("\n".join(lines)), stats), stats
+    return _sessions_body(lines[:len(lines) - len(questions)], questions, stats), stats
+
+
+class SessionsBody(str):
+    """The kagent-sessions block, which still remembers which lines were questions and whose.
+
+    A str, so everything that reads a block reads this unchanged. It exists for fold_questions: the
+    agent-analysis stage runs AFTER this source and reads the same people's messages in full, so the
+    questions it covered are paid for twice unless they can be taken back out — and taking them out of
+    the rendered text by pattern would be parsing our own output after the cap had already cut it."""
+    head = questions = snapshot = None
+
+
+_TRUNCATION_KEYS = ("truncated", "truncatedAtChars", "droppedChars")
+
+
+def _sessions_body(head, questions, stats):
+    snapshot = {k: stats.get(k) for k in _TRUNCATION_KEYS}
+    body = SessionsBody(_cap(redact("\n".join(head + questions)), stats))
+    body.head, body.questions, body.snapshot = head, questions, snapshot
+    return body
+
+
+_CONVERSATION = re.compile(r"^  - conversation \d+ with (\S+):$")
+
+
+def fold_questions(body, stats, covered):
+    """The kagent-sessions block with the questions of every agent in `covered` (kagent agent_ids)
+    replaced by one pointer line each, re-capped, with the truncation fields recomputed for what is now
+    sent. The census half — idle, never used, active — and the questions of agents the analysis did NOT
+    read (over its agent cap, excluded, or failed) are untouched: those still reach the review only here.
+
+    WHY #32's READ STAYS RATHER THAN BEING REPLACED. Its census and `shapes` are the denominator that
+    tells "nobody asked" from "the stored shape changed", and it is the fallback for every agent the
+    analysis does not cover tonight. What it no longer does is spend the main corpus's budget quoting a
+    conversation that a separate call has already read in full."""
+    if not isinstance(body, SessionsBody) or not covered or not body.questions:
+        return body
+    header, groups = body.questions[0], []
+    for line in body.questions[1:]:
+        m = _CONVERSATION.match(line)
+        if m:
+            groups.append((m.group(1), [line]))
+        elif groups:
+            groups[-1][1].append(line)
+    folded = {}
+    for agent, _ in groups:
+        if agent in covered:
+            folded[agent] = folded.get(agent, 0) + 1
+    if not folded:
+        return body
+    kept = [ln for agent, g in groups if agent not in covered for ln in g]
+    questions = ([header] + kept if kept else []) + [
+        f"- QUESTIONS to {agent} in {n} conversation(s): read IN FULL by agent-analysis, with the replies "
+        f"and tool calls — see that evidence; not repeated here" for agent, n in sorted(folded.items())]
+    for k, v in body.snapshot.items():
+        if v is None:
+            stats.pop(k, None)
+        else:
+            stats[k] = v
+    stats["questionsFolded"] = sum(folded.values())
+    return _sessions_body(body.head, questions, stats)
 
 
 # Bounds for the page list. 057 carries 33 page roots in krateo-system against 184 Flex widgets and 553

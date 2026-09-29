@@ -12,6 +12,7 @@ import sys
 import jsonschema
 from kubernetes import client, config
 
+import analysis
 import autopilot
 import evidence
 import prompt
@@ -30,7 +31,7 @@ def _now():
 
 
 class _Steps:
-    """status.steps[]: gather, ask, validate, publish, record — each with its own clock and outcome.
+    """status.steps[]: gather, analyse, ask, validate, publish, record — each with its own clock and outcome.
 
     WHY A RUN NEEDS MORE THAN ITS PHASE. A Failed run said THAT it failed and, through `error`, roughly
     why, but not WHERE: a 900-second ask that timed out and a validation that refused the answer in
@@ -40,7 +41,7 @@ class _Steps:
     Every transition is patched immediately rather than at the end, so a run killed mid-ask (the Job's
     deadline, an evicted node) still says which step it died in. The list is written whole each time:
     a merge-patch replaces arrays, which is what keeps the entries in order."""
-    ORDER = ("gather", "ask", "validate", "publish", "record")
+    ORDER = ("gather", "analyse", "ask", "validate", "publish", "record")
 
     def __init__(self, api, run_name, st):
         self.api, self.run_name, self.st = api, run_name, st
@@ -75,6 +76,7 @@ class _Steps:
 def main():
     config.load_incluster_config()
     api = client.CustomObjectsApi()
+    core = client.CoreV1Api()
 
     to = _now()
     frm = to - dt.timedelta(hours=WINDOW_HOURS)
@@ -84,7 +86,7 @@ def main():
     api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "reviewruns", {
         "apiVersion": f"{GROUP}/{VERSION}", "kind": "ReviewRun",
         "metadata": {"name": run_name, "namespace": NAMESPACE},
-        "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes"],
+        "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes", "agent-analysis"],
                  "dryRun": DRY_RUN},
     })
     # PEOPLE'S DECISIONS FIRST, AND ON EVERY RUN — before the gather, so a night whose ask or validation
@@ -116,6 +118,48 @@ def main():
         if body:
             blocks[name] = body
 
+    if not blocks:
+        # Nothing answered. This is a FAILED run, not an uneventful one — the distinction matters
+        # because "no proposals" from a healthy night and "no proposals" from a blind one look
+        # identical on a dashboard and mean opposite things.
+        steps.end("gather", "Failed", "no evidence source answered")
+        st |= {"phase": "Failed", "finishedAt": _now().isoformat(),
+               "error": "no evidence source answered; nothing was reviewed"}
+        _patch(api, run_name, st)
+        print("[run] no evidence; failed", flush=True)
+        return 1
+    failed_sources = [n for n, st_ in st["evidence"].items() if not st_.get("ok")]
+    steps.end("gather", message=f"answered: {', '.join(sorted(blocks))}"
+                                + (f"; failed: {', '.join(failed_sources)}" if failed_sources else ""))
+
+    # EVERY MODEL CALL THE RUN MAKES, with the usage each reported — see _usage below.
+    calls = []
+
+    # THE ANALYSE STAGE: one call per agent over its conversations in full, and only the ASSESSMENTS go
+    # on to the main call. See analysis.py for why the transcripts must not. It degrades, never blanks:
+    # one agent's failure is recorded on that agent; all of them failing is ok:false on the source, the
+    # run becomes PartiallyCompleted, and the main review still runs on everything else.
+    steps.start("analyse")
+    try:
+        assessments, astats, acalls = analysis.analyse(api, core, window, run_name, token)
+    except Exception as exc:                                  # noqa: BLE001
+        assessments, astats, acalls = [], {"ok": False, "scope": analysis.SCOPE,
+                                           "error": P.redact(f"{type(exc).__name__}: {exc}")[:300]}, []
+    st["evidence"]["agent-analysis"] = astats
+    calls += acalls
+    if assessments:
+        blocks["agent-analysis"] = analysis.render_for_review(assessments)
+        st["agentAnalysis"] = {"assessments": analysis.stored(assessments)}
+        # Not paid for twice: the questions of every agent the analysis read are folded to a pointer.
+        if "kagent-sessions" in blocks:
+            blocks["kagent-sessions"] = evidence.fold_questions(
+                blocks["kagent-sessions"], st["evidence"]["kagent-sessions"],
+                analysis.covered_agent_keys(assessments))
+    agents_failed = sum(1 for r in astats.get("agents") or [] if r.get("error"))
+    steps.end("analyse", "Succeeded" if astats.get("ok") else "Failed",
+              astats.get("error") or astats.get("note")
+              or f"{astats.get('returned', 0)} agent(s) analysed, {agents_failed} failed")
+
     # A SOURCE THAT FAILED IS DEGRADATION. A SOURCE THAT IS LEGITIMATELY EMPTY IS NOT.
     #
     # `empty` used to count as degraded on the reasoning that a source returning nothing has not really
@@ -138,19 +182,6 @@ def main():
     if unexplained_empty:
         print(f"[run] empty but explained, not counted as degraded: {unexplained_empty}", flush=True)
 
-    if not blocks:
-        # Nothing answered. This is a FAILED run, not an uneventful one — the distinction matters
-        # because "no proposals" from a healthy night and "no proposals" from a blind one look
-        # identical on a dashboard and mean opposite things.
-        steps.end("gather", "Failed", "no evidence source answered")
-        st |= {"phase": "Failed", "finishedAt": _now().isoformat(),
-               "error": "no evidence source answered; nothing was reviewed"}
-        _patch(api, run_name, st)
-        print("[run] no evidence; failed", flush=True)
-        return 1
-    steps.end("gather", message=f"answered: {', '.join(sorted(blocks))}"
-                                + (f"; degraded: {', '.join(degraded)}" if degraded else ""))
-
     # `raw` is bound OUTSIDE the try on purpose. When validation refuses a response, the one thing
     # needed to fix it is the response, and until now the run recorded only that it was unusable — a
     # night failed with "no `proposals` array" and left nothing to say WHAT had arrived instead.
@@ -170,6 +201,8 @@ def main():
         # measurement. Absent now means "not reported"; see autopilot.token_usage.
         if usage:
             st["model"] = usage
+        calls.append({"step": "ask", **(usage or {})})
+        st["usage"] = _usage(calls)
         step = "validate"
         steps.start("validate")
         kept, notes = P.validate_batch(
@@ -178,6 +211,8 @@ def main():
             item_check=lambda p: jsonschema.validate(p, prompt.ITEM_SCHEMA),
         )
     except Exception as exc:                                  # noqa: BLE001
+        if calls:
+            st["usage"] = _usage(calls)
         steps.end(step, "Failed", f"{type(exc).__name__}: {exc}")
         st |= {"phase": "Failed", "finishedAt": _now().isoformat(), "error": f"{type(exc).__name__}: {exc}"[:500]}
         # REDACTED BEFORE IT IS STORED OR PRINTED, through the same path a proposal takes. This text is
@@ -198,6 +233,13 @@ def main():
     summary = payload.get("summary") if isinstance(payload, dict) else None
     if isinstance(summary, str) and summary.strip():
         st["summary"] = P.redact(summary)[:2000]
+
+    # A Prompt proposal about an agent whose prompt repository is DECLARED on the Agent goes there,
+    # whatever the model chose — before fingerprinting, because the target is part of the fingerprint.
+    for prop in kept:
+        moved = analysis.retarget(prop, assessments)
+        if moved:
+            notes.append(moved)
 
     # Decided per proposal, BEFORE anything is written: which are duplicates, which replace an open
     # one, and whether the repository each names exists. The existence check lives in validate because
@@ -296,6 +338,21 @@ def main():
     print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, {answered} already decided, "
           f"{superseded} superseded, {unresolved} unresolved target(s), degraded={degraded}", flush=True)
     return 0
+
+
+def _usage(calls):
+    """status.usage: every model call with the tokens IT reported, and a total over the ones that did.
+
+    HONEST ABOUT WHAT IT DOES NOT KNOW. A call that reported nothing is listed with no token fields, and
+    the total says how many calls it covers — a total summed over three of five calls is not the night's
+    cost, and without `reportedCalls` beside it nothing would say so."""
+    keys = ("inputTokens", "outputTokens", "totalTokens")
+    reported = [c for c in calls if any(k in c for k in keys)]
+    total = {"calls": len(calls), "reportedCalls": len(reported)}
+    for k in keys:
+        if any(k in c for c in reported):
+            total[k] = sum(c.get(k, 0) for c in reported)
+    return {"calls": calls[:40], "total": total}
 
 
 def _patch(api, name, status):

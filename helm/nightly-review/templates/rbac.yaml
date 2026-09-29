@@ -33,6 +33,24 @@ rules:
   - apiGroups: ["composition.krateo.io"]
     resources: ["builderpublishes"]
     verbs: ["get", "list", "create", "patch"]
+  {{- if gt (int .Values.config.agentAnalysis.maxAgents) 0 }}
+  # AN AGENT'S PROMPT IS MOSTLY IN A CONFIGMAP. kagent's promptTemplate include("alias/key") reads keys
+  # of ConfigMaps in the Agent's own namespace, and on 057 every production agent's systemMessage is a
+  # single include — the 1-49k characters the analysis needs are in the ConfigMap. `get` only: the
+  # stage reads the names an Agent's dataSources list, so it never needs to enumerate. This namespace
+  # only, and narrowed to named ConfigMaps when config.agentAnalysis.promptConfigMaps lists them.
+  #
+  # NOT Secrets, even though systemMessageFrom may point at one and kagent writes the RESOLVED prompt
+  # into the agent's config Secret — reading that would have been simpler. The corpus goes to a model,
+  # and a component that can read Secrets can put one in a prompt; so the template is re-resolved from
+  # the ConfigMaps instead, and a Secret-backed prompt is recorded as not read.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    {{- with .Values.config.agentAnalysis.promptConfigMaps }}
+    resourceNames: {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -93,7 +111,10 @@ subjects:
 # CLUSTER-SCOPED, LIST ONLY, ON ONE KIND. kagent Agents are what the session source compares against to
 # find agents that are DEPLOYED BUT HAVE NEVER BEEN USED — an agent with no session has no row to group,
 # so the only way to see it is to read the deployed set. Cluster-scoped because agents need not live in
-# this namespace, and `list` only: the source never reads an Agent's spec, just its namespace and name.
+# this namespace. The analyse stage reads each Agent's SPEC (systemMessage, promptTemplate, annotations
+# naming its prompt's repository); it does so from the same one-per-run list, and `get` is granted
+# beside it so a single Agent can be re-read by name without widening anything — both are read-only on
+# one kind. `list` has been here since 0.1.19.
 #
 # NOT gated on dryRun, unlike the CRD read below: this is evidence gathering and happens on every run
 # whether or not anything is published.
@@ -109,7 +130,7 @@ metadata:
 rules:
   - apiGroups: ["kagent.dev"]
     resources: ["agents"]
-    verbs: ["list"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

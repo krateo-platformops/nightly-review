@@ -341,3 +341,17 @@ def test_the_default_queries_can_return_rows_on_this_platform():
         assert "GROUP BY" in sql and "count()" in sql, f"{name} returns rows, not an aggregate"
     assert "'k8s-events'" in values["kubernetesEventReasons"]
     assert "JSONExtractString(Body, 'object', 'reason')" in values["kubernetesEventReasons"]
+
+
+def test_a_bench_agent_s_questions_never_reach_the_review(monkeypatch):
+    """The analyse stage skips `*-bench`; the question read used to skip only the reviewer, so a
+    k8s-agent-bench question reached the main review. Bench traffic is scripted, and nothing derived
+    from it may become product content."""
+    monkeypatch.setenv("AGENT_ANALYSIS_EXCLUDE_AGENTS", "*-bench")
+    conn = _Conn([
+        ("s1", "krateo_system__NS__k8s_agent_bench", _py("scripted bench question"), 1),
+        ("s2", "krateo_system__NS__k8s_agent", _py("how do I scale a deployment"), 1),
+    ], census=(2, 2, 2, 2))
+    out = "\n".join(E._read_questions(conn, WINDOW, {}))
+    assert "scripted bench question" not in out
+    assert "how do I scale a deployment" in out

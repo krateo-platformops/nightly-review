@@ -8,12 +8,12 @@ requests. **The portal opens one per proposal**, when a person decides to.
 ## The shape, and why
 
 ```
-CronJob ─▶ gather ─▶ ask ─▶ validate ─▶ publish ─▶ record
-           evidence   the     schema, redact,   skipped:   Proposals +
-           (fixed     reviewer alert kind,      dryRun     ReviewRun
-           queries)   agent    dedup/supersede,
-                      (no      target exists?
-                      tools)
+CronJob ─▶ gather ─▶ analyse ─▶ ask ─▶ validate ─▶ publish ─▶ record
+           evidence   one call   the     schema, redact,   skipped:   Proposals +
+           (fixed     per agent, reviewer alert kind,      dryRun     ReviewRun
+           queries)   whole      agent    dedup/supersede,
+                      conver-    (no      target exists?
+                      sations    tools)
 ```
 
 Each stage is recorded on the run as `status.steps[]`, with its own start, finish and outcome, so a
@@ -23,6 +23,12 @@ failed run says *where* it stopped, and in particular whether the model was ever
 tools** (`templates/agent.yaml`). It cannot delegate, fetch or write; it reads the evidence it is given
 and returns JSON. That JSON is schema-checked, redacted and validated before any of it is written.
 A prompt injection can therefore produce a bad `Proposal`, never a commit.
+
+**Conversations are read in full, but not by the main review.** The `analyse` stage makes one call
+per agent, to the same tool-less reviewer, over that agent's conversations in the window: what people
+asked, what the agent answered, which tools it called and what they returned, against the prompt the
+agent runs with today. What reaches the main review is each call's bounded **assessment**, never a
+transcript. See [What the agents did](#what-the-agents-did).
 
 **The corpus is untrusted.** It contains telemetry and data derived from real people's use of agents,
 so anyone who can write a log line or talk to an agent can put text in tomorrow's prompt. It is fenced
@@ -132,19 +138,85 @@ TroubleshootingReport. The portal sends a merge-patch with the user's own token:
 | source | how | why that way |
 |---|---|---|
 | ClickHouse | fixed SQL from chart values, `{from}`/`{to}` bound to the window | a model is never asked to author SQL against a store that has held live credentials; an unwindowed query is refused |
-| kagent sessions | session **metadata**, and the text of **user-authored** messages in the window, from kagent's Postgres, with a role granted SELECT on `session` and `event` (revoked on `task`) | reports which deployed agents are idle or never used, and what people asked, so a question asked again and again with no written answer becomes a Documentation proposal. All users; the run records `scope` saying so. Questions only, never agent replies or tool output; redacted before the prompt; capped per conversation and in total, with every cut recorded (`truncated`, `droppedMessages`, `droppedSessions`); no user ids. `shapes` counts how the stored events parsed, so an unreadable corpus fails the source instead of reading as a quiet night |
+| kagent sessions | session **metadata**, and the text of **user-authored** messages in the window, from kagent's Postgres, with a role granted SELECT on `session` and `event` (revoked on `task`) | reports which deployed agents are idle or never used, and what people asked, so a question asked again and again with no written answer becomes a Documentation proposal. All users; the run records `scope` saying so. Questions only, never agent replies or tool output; redacted before the prompt; capped per conversation and in total, with every cut recorded (`truncated`, `droppedMessages`, `droppedSessions`); no user ids. `shapes` counts how the stored events parsed, so an unreadable corpus fails the source instead of reading as a quiet night. The questions of agents the analysis read in full are folded to a pointer (`questionsFolded`) |
+| agent analysis | whole conversations of every agent with sessions in the window (same Postgres role; `event` already holds replies and tool output), and each agent's prompt from its `Agent` object | the only source that can say whether people were **served**, and why the prompt made it so. Read by a separate call per agent; the main review gets the assessment. See below |
 | existing Alerts and pages | Kubernetes API: Alerts, and page roots (Flex widgets named `page-*`; there is no Page kind), each read failing on its own | so it proposes gaps rather than duplicates |
 
 The review window is bounded, and that is a safety control rather than a cost one: spans ingested
 before the collector's JWT redaction landed can still carry live credentials.
+
+## What the agents did
+
+The `analyse` stage, between `gather` and `ask`. It exists because #32's question-only read was the
+wrong shape twice over: on 057 (rr-20260929-2033) it saw 26 questions and was barred from the 323 events
+that say whether they were answered, and it still overran its cap by 167,941 characters. Whole
+conversations are far bigger, so they are read one agent at a time and **never** go to the main call,
+where they would evict the ClickHouse and Kubernetes evidence that produced every proposal that night.
+
+- **What one call sees.** The agent's conversations in the window, in order, per conversation (Python
+  `author`/`function_call` and Go `Author`/`functionCall` spellings both), with delegated sessions
+  labelled as another agent's; and the agent's **current prompt**, from its `Agent` (v1alpha2): the
+  `systemMessage`, with kagent's `promptTemplate` `include("alias/key")` resolved from the ConfigMaps
+  its `dataSources` name. On 057 every production agent's `systemMessage` is a single include, so the
+  1–49k characters that matter are in a ConfigMap. A `systemMessageFrom` Secret is **never** read; it is
+  recorded as such.
+- **What comes back.** `failurePatterns[]` (category: misroute, refusal, wrong-or-invented,
+  tool-failure, loop, ignored-instruction, other), `promptFindings[]` (what the prompt says or lacks, the
+  evidence, the change), `recurringNeeds[]`, `servedWell`, `summary`.
+- **Counted by the service, not the model.** A pattern's `count` is the number of distinct cited
+  conversations that exist; the model is never asked for a number. Every excerpt is searched for in the
+  transcript it cites (and a `promptExcerpt` in the prompt); one that cannot be found is dropped and
+  counted in `unverifiedExamples`. Tool errors, unanswered conversations and repeated identical calls are
+  **measured** from the events and given to the model as fact.
+- **Redacted before anything leaves the process**, per message and before any cut — replies, tool
+  arguments, tool results and the prompt included. The per-agent call is a new egress point (whole
+  conversations leave the process there), and a test stands a fake reviewer at it. The redactor now
+  matches any identifier CONTAINING a key word — `DB_PASSWORD=`, `PGPASSWORD=`, `MY_API_KEY=`,
+  `"dbPassword": "…"`, `db_password: …` all passed before, because `\b` never matched after `_` or
+  inside a word — plus JSON-quoted keys and prose (`my password is …`, when the value carries a digit).
+  The key must be followed by `=` or `:`, so "how do I reset my password?" is left alone.
+- **Budgets** (`config.agentAnalysis`, all declared in `values.schema.json`): agents per run (8), sessions
+  per agent (20), events per conversation (40: first half and last half), characters per agent (80k),
+  per message (2k), per tool result (800, the hard one), per tool call's arguments (400), prompt (60k), a
+  per-event fetch limit (256 KiB), a per-call timeout (300s) and a stage total (1500s), and what the
+  assessments may add to the main corpus (16k). This budget is **separate** from `evidenceMaxChars`.
+  Every cut is recorded on the run.
+- **Failure is per agent.** A call that times out or answers unusable JSON is recorded on that agent
+  (`status.evidence.agent-analysis.agents[].error`) and the others go on. The source is `ok: false`, and
+  the run `PartiallyCompleted`, only when no agent could be analysed.
+- **Not paid for twice.** #32's question read stays — its census and `shapes` are what tell "nobody
+  asked" from "the shape changed", and it still carries the questions of agents the analysis did not
+  cover — but the questions of every agent the analysis **did** read are folded to one pointer line
+  (`questionsFolded`).
+- **Excluded:** the reviewer itself, always, and `excludeAgents` (default `*-bench`: a benchmark's
+  traffic is a harness's, and product prompts must not be tuned from it). Agents with sessions but no
+  longer deployed are skipped: their rows are history.
+- **Where a Prompt proposal lands.** If the `Agent` or its prompt ConfigMap carries
+  `krateo.io/prompt-repo` (or `krateo.io/source-repo`, `org.opencontainers.image.source`), a Prompt
+  proposal about that agent is aimed there, whatever the model chose, with a validation note. Otherwise
+  the model proposes a repository and `TargetResolved` records what GitHub said — for agent prompts,
+  which live in private `krateo-agentiko` repositories, `NotFoundOrPrivate` is the expected answer.
+- **On the ReviewRun:** `status.evidence.agent-analysis` (scope, counts, cuts, and one entry per agent:
+  sessions, messages, droppedChars, tokens, patterns, error), `status.agentAnalysis.assessments` (bounded,
+  for the portal; the one place a run keeps quoted content: at most three redacted 300-character
+  excerpts per pattern), `status.usage` (every model call with the tokens it reported, and a total that
+  says how many calls it covers), and an `analyse` entry in `status.steps`.
+- **RBAC:** `get` on ConfigMaps in the release namespace (never `list`, never Secrets; narrowed to
+  `config.agentAnalysis.promptConfigMaps` when set), and `get` on Agents beside the cluster-wide `list`
+  granted since 0.1.19.
+
+**The instructions now reach the model.** Both calls send their instructions as the first part of the
+A2A message. They used to travel in `params.metadata.systemPrompt`, which kagent 0.10.1 never reads (its
+request converter uses `message.parts` only), so until this release the main review never saw a line of
+`prompt.SYSTEM` — only the reviewer Agent's own `systemMessage` and the schema rendered into the message.
 
 ## Configuration
 
 See `helm/nightly-review/values.yaml`, and `values.schema.json`, whose defaults are what the installer
 applies. The values that matter: `clickhouseQueries` (the reviewable surface; adapt them to your
 schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
-`config.targetCheckApiUrl` (empty disables the existence check), `portalAdminAccess`, and
-`decisionPolicy`.
+`config.targetCheckApiUrl` (empty disables the existence check), `config.agentAnalysis` (the per-agent
+conversation budget; `maxAgents: 0` turns the stage off), `portalAdminAccess`, and `decisionPolicy`.
 
 Releases are cut by tag: `Chart.yaml` ships `CHART_VERSION`, and a `X.Y.Z` tag builds the image and
 publishes both charts at that version.

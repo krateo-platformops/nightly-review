@@ -105,6 +105,34 @@ config:
     maxSessions: 40
     maxMessagesPerSession: 6
     maxCharsPerSession: 1500
+  # WHAT THE AGENTS DID. Between gather and ask, ONE model call per agent that had conversations in the
+  # window, over those conversations IN FULL — questions, agent replies, tool calls and tool results —
+  # and the agent's current prompt (its Agent's systemMessage, with promptTemplate include()s resolved
+  # from the ConfigMaps it names). Only each call's bounded ASSESSMENT reaches the main review, never a
+  # transcript; the budget here is separate from evidenceMaxChars. Everything is redacted per message
+  # before any cut. Uses the same reviewer and the same secrets.kagentDb role (SELECT on `event` already
+  # covers replies). Every cut is recorded on the run. maxAgents: 0 turns the stage off.
+  agentAnalysis:
+    maxAgents: 8                 # most-used agents first; the rest are recorded as skipped
+    maxSessionsPerAgent: 20      # most recently active first
+    maxMessagesPerSession: 40    # stored events: the first half and the last half; the middle gives way
+    maxCharsPerAgent: 80000      # the conversations shown for one agent, after every per-message cut
+    maxCharsPerMessage: 2000     # a question, a reply, an error
+    maxToolResultChars: 800      # HARD: tool results are the bulk
+    maxToolArgsChars: 400
+    maxPromptChars: 60000        # autopilot's resolved prompt is ~49k on 057
+    maxEventChars: 262144        # a stored event larger than this is not fetched at all
+    timeoutSeconds: 300          # one agent's call, total
+    totalSeconds: 1500           # the whole stage; agents not reached are recorded
+    corpusMaxChars: 16000        # what the assessments may add to the main review
+    # Globs over "namespace/name" or "name". The reviewer agent this chart creates is always excluded.
+    # Benchmark agents belong here: their traffic is a harness's, and product prompts must not be
+    # tuned from it.
+    excludeAgents: ["*-bench"]
+    # ConfigMaps the prompt includes may be read from, by name, in this release's namespace. Empty
+    # grants `get` on ConfigMaps in the namespace (never `list`, never another namespace, never
+    # Secrets); naming them narrows the grant to exactly those.
+    promptConfigMaps: []
   clickhouseUrl: ""
   evidenceMaxChars: 60000
   # TWO CLOCKS. a2aTimeoutSeconds is the TOTAL budget for one question and bounds the run; the read

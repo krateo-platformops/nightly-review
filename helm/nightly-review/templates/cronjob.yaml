@@ -97,6 +97,36 @@ spec:
                 - name: KAGENT_QUESTIONS_EXCLUDE_AGENTS
                   value: {{ printf "%s/%s" .Release.Namespace .Values.reviewer.name | quote }}
                 {{- end }}
+                {{- /* The analyse stage: one model call per agent over its conversations in full. Every
+                       budget is a value, and every cut is recorded on the run. */}}
+                {{- with .Values.config.agentAnalysis }}
+                - name: AGENT_ANALYSIS_MAX_AGENTS
+                  value: {{ .maxAgents | quote }}
+                - name: AGENT_ANALYSIS_MAX_SESSIONS_PER_AGENT
+                  value: {{ .maxSessionsPerAgent | quote }}
+                - name: AGENT_ANALYSIS_MAX_MESSAGES_PER_SESSION
+                  value: {{ .maxMessagesPerSession | quote }}
+                - name: AGENT_ANALYSIS_MAX_CHARS_PER_AGENT
+                  value: {{ .maxCharsPerAgent | quote }}
+                - name: AGENT_ANALYSIS_MAX_CHARS_PER_MESSAGE
+                  value: {{ .maxCharsPerMessage | quote }}
+                - name: AGENT_ANALYSIS_MAX_TOOL_RESULT_CHARS
+                  value: {{ .maxToolResultChars | quote }}
+                - name: AGENT_ANALYSIS_MAX_TOOL_ARGS_CHARS
+                  value: {{ .maxToolArgsChars | quote }}
+                - name: AGENT_ANALYSIS_MAX_PROMPT_CHARS
+                  value: {{ .maxPromptChars | quote }}
+                - name: AGENT_ANALYSIS_MAX_EVENT_CHARS
+                  value: {{ .maxEventChars | quote }}
+                - name: AGENT_ANALYSIS_TIMEOUT_SECONDS
+                  value: {{ .timeoutSeconds | quote }}
+                - name: AGENT_ANALYSIS_TOTAL_SECONDS
+                  value: {{ .totalSeconds | quote }}
+                - name: AGENT_ANALYSIS_CORPUS_MAX_CHARS
+                  value: {{ .corpusMaxChars | quote }}
+                - name: AGENT_ANALYSIS_EXCLUDE_AGENTS
+                  value: {{ join "," .excludeAgents | quote }}
+                {{- end }}
                 {{- with .Values.secrets.kagentDb.name }}
                 - name: KAGENT_DB_USER
                   valueFrom:

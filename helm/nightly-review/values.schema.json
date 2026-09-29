@@ -136,6 +136,125 @@
             "maxMessagesPerSession": 6,
             "maxCharsPerSession": 1500
           }
+        },
+        "agentAnalysis": {
+          "type": "object",
+          "additionalProperties": false,
+          "title": "What the agents did",
+          "description": "Between gather and ask, one model call per agent with conversations in the window, over those conversations IN FULL (user messages, agent replies, tool calls and tool results), window-bounded and redacted per message before any cut, with the agent's current system prompt read from its Agent object (promptTemplate include()s resolved from ConfigMaps). Only each call's bounded assessment reaches the main review, never a transcript, and this budget is separate from evidenceMaxChars. Same reviewer and same secrets.kagentDb role. Every cut is recorded on the run.",
+          "properties": {
+            "maxAgents": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 8,
+              "description": "Agents analysed per run, most-used first; one model call each. Agents beyond it are recorded on the run as skipped (droppedAgents). 0 disables the stage.",
+              "maximum": 20
+            },
+            "maxSessionsPerAgent": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20,
+              "description": "Conversations read per agent, most recently active first."
+            },
+            "maxMessagesPerSession": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 40,
+              "description": "Stored events read per conversation: the first half and the last half, so the question and the outcome survive and the middle gives way."
+            },
+            "maxCharsPerAgent": {
+              "type": "integer",
+              "minimum": 1000,
+              "default": 80000,
+              "description": "Characters of conversation shown for one agent, after redaction and every per-message cut. Separate from evidenceMaxChars: none of this reaches the main review."
+            },
+            "maxCharsPerMessage": {
+              "type": "integer",
+              "minimum": 100,
+              "default": 2000,
+              "description": "Characters per question, reply or error, after redaction."
+            },
+            "maxToolResultChars": {
+              "type": "integer",
+              "minimum": 50,
+              "default": 800,
+              "description": "Characters per tool result, after redaction. The hard cap: tool results are the bulk of a conversation."
+            },
+            "maxToolArgsChars": {
+              "type": "integer",
+              "minimum": 50,
+              "default": 400,
+              "description": "Characters of a tool call's arguments, after redaction."
+            },
+            "maxPromptChars": {
+              "type": "integer",
+              "minimum": 1000,
+              "default": 60000,
+              "description": "Characters of the agent's resolved system prompt shown to the analysis; a longer prompt is cut and the run says so (promptTruncated)."
+            },
+            "maxEventChars": {
+              "type": "integer",
+              "minimum": 1024,
+              "default": 262144,
+              "description": "A stored event larger than this is not fetched from Postgres at all; its size is recorded as dropped."
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 30,
+              "default": 300,
+              "description": "Total wall-clock budget for one agent's model call."
+            },
+            "totalSeconds": {
+              "type": "integer",
+              "minimum": 60,
+              "default": 1500,
+              "description": "Total budget for the whole stage. Agents not reached in time are recorded with the reason."
+            },
+            "corpusMaxChars": {
+              "type": "integer",
+              "minimum": 1000,
+              "default": 16000,
+              "description": "What the assessments may add to the main review's corpus, all agents together."
+            },
+            "excludeAgents": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": [
+                "*-bench"
+              ],
+              "description": "Globs over namespace/name or name. The reviewer this chart creates is always excluded too (its user turns are the previous night's corpus). Benchmark agents belong here: their traffic is a harness's, and product prompts must not be tuned from it."
+            },
+            "promptConfigMaps": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": [],
+              "description": "ConfigMap names, in this release's namespace, that Agents' promptTemplate dataSources may be read from. Empty grants get (never list) on ConfigMaps in this namespace only; naming them narrows the grant to exactly those resourceNames. Secrets are never granted: a systemMessageFrom Secret is recorded as not read."
+            }
+          },
+          "default": {
+            "maxAgents": 8,
+            "maxSessionsPerAgent": 20,
+            "maxMessagesPerSession": 40,
+            "maxCharsPerAgent": 80000,
+            "maxCharsPerMessage": 2000,
+            "maxToolResultChars": 800,
+            "maxToolArgsChars": 400,
+            "maxPromptChars": 60000,
+            "maxEventChars": 262144,
+            "timeoutSeconds": 300,
+            "totalSeconds": 1500,
+            "corpusMaxChars": 16000,
+            "excludeAgents": [
+              "*-bench"
+            ],
+            "promptConfigMaps": []
+          }
         }
       }
     },
@@ -161,7 +280,7 @@
         "kagentDb": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Credential for kagent's Postgres, read across every user: session METADATA, and the text of user-authored messages (config.kagentQuestions). The role named here must hold SELECT on `session` and `event` and nothing else; it stays REVOKEd on `task`. `event` also holds agent replies and tool output, which the query leaves out and the code re-checks \u2014 the grant cannot draw that line. That narrowness is a database privilege, NOT something this chart enforces \u2014 verify it where the role is created (session=t, event=t, task=f). A role still revoked on `event` keeps the metadata and makes the run PartiallyCompleted. No `default` on any leaf here, deliberately: an empty name must mean not-configured so the source reports it and the run is PartiallyCompleted, rather than a default silently standing in.",
+          "description": "Credential for kagent's Postgres, read across every user: session METADATA and the text of user-authored messages (config.kagentQuestions), and — for config.agentAnalysis — whole conversations: agent replies, tool calls and tool results too. The role named here must hold SELECT on `session` and `event` and nothing else; it stays REVOKEd on `task`. No new grant is needed for the analysis: replies and tool output are rows of `event`, which the grant already covers — so the grant has never been what kept them out, and the scope each source records on the run says what it read. That narrowness is a database privilege, NOT something this chart enforces — verify it where the role is created (session=t, event=t, task=f). A role still revoked on `event` keeps the metadata and makes the run PartiallyCompleted. No `default` on any leaf here, deliberately: an empty name must mean not-configured so the source reports it and the run is PartiallyCompleted, rather than a default silently standing in.",
           "properties": {
             "name": {
               "type": "string"

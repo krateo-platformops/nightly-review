@@ -361,12 +361,17 @@ def _crd_schema(name):
 
 
 def _undeclared(value, schema, path=""):
-    """Paths the apiserver would prune (undeclared) or reject (outside an enum)."""
+    """Paths the apiserver would prune (undeclared) or reject (outside an enum, over a maxLength or a
+    maxItems — a rejection fails the WHOLE status write, which is worse than a prune)."""
     out = []
     if schema.get("x-kubernetes-preserve-unknown-fields"):
         return out
     if "enum" in schema and value is not None and value not in schema["enum"]:
         out.append(f"{path} = {value!r} not in enum")
+    if isinstance(value, str) and len(value) > schema.get("maxLength", len(value)):
+        out.append(f"{path} longer than maxLength {schema['maxLength']}")
+    if isinstance(value, list) and len(value) > schema.get("maxItems", len(value)):
+        out.append(f"{path} has more than maxItems {schema['maxItems']}")
     if isinstance(value, dict):
         props, extra = schema.get("properties"), schema.get("additionalProperties")
         for k, v in value.items():
@@ -389,16 +394,29 @@ def full_run(monkeypatch):
     import evidence as E
     import main as M
 
+    import analysis as AN
+
     old = _stored("p-old", subject="snowplow/sar-unauthorized", run="rr-older")
+    # `busy` carries a promptTemplate include and DECLARES its prompt's repository, so the analyse stage
+    # resolves a ConfigMap and the retarget path runs.
+    busy = {"metadata": {"namespace": "krateo-system", "name": "busy",
+                         "annotations": {"krateo.io/prompt-repo": "krateo-agentiko/busy-agent"}},
+            "spec": {"type": "Declarative", "declarative": {
+                "systemMessage": '{{include "prompts/busy"}}\nBe brief.',
+                "promptTemplate": {"dataSources": [{"alias": "prompts", "kind": "ConfigMap",
+                                                    "name": "busy-prompts"}]}}}}
     api = _Api(proposals=[old, _stored("p-legacy")],
                alerts=[{"metadata": {"name": "a"}, "spec": {"displayName": "A", "threshold": 1}}],
-               agents=[{"metadata": {"namespace": "krateo-system", "name": "never-used"}},
-                       {"metadata": {"namespace": "krateo-system", "name": "busy"}}],
+               agents=[{"metadata": {"namespace": "krateo-system", "name": "never-used"}}, busy],
                flexes=[{"metadata": {"name": "page-dashboard",
                                      "annotations": {"krateo.io/nav-path": "/dashboard"}}},
                        {"metadata": {"name": "dashboard-row-1"}}])
     monkeypatch.setattr(M.config, "load_incluster_config", lambda: None)
     monkeypatch.setattr(M.client, "CustomObjectsApi", lambda: api)
+    cm = types.SimpleNamespace(data={"busy": "You are busy. Always cite the tool you used."},
+                               metadata=types.SimpleNamespace(name="busy-prompts", annotations={}))
+    monkeypatch.setattr(M.client, "CoreV1Api", lambda: types.SimpleNamespace(
+        read_namespaced_config_map=lambda name, ns: cm))
     monkeypatch.setattr(M, "DRY_RUN", False)
 
     # ClickHouse: a windowed query that answers, so stats carries `queries`; MAX_CHARS tiny so every
@@ -418,7 +436,24 @@ def full_run(monkeypatch):
     q = '{"Author": "user", "Content": {"role": "user", "parts": [{"text": "why is my composition not ready?"}]}}'
     qrows = [("s1", "krateo_system__NS__busy", q, 9), ("s1", "krateo_system__NS__busy", "not json", 9)]
 
+    # The analyse stage's two reads: busy has two conversations (one over the session cap), a tool result
+    # over its cap, and an event too large to fetch — so every cut field is written and checked.
+    monkeypatch.setattr(AN, "MAX_SESSIONS", 1)
+    monkeypatch.setattr(AN, "MAX_TOOL_RESULT_CHARS", 50)
+    busy_id = "krateo_system__NS__busy"
+    acensus = [(busy_id, 2, 5, 1), ("krateo_system__NS__gone", 1, 1, 0)]
+    arows = [(busy_id, 1, "agent", 5, 1, q, len(q)),
+             (busy_id, 1, "agent", 5, 2, '{"Author": "busy", "Content": {"parts": [{"functionResponse": '
+              '{"name": "k8s_get", "response": {"result": "' + "y" * 400 + '"}}}]}}', 500),
+             (busy_id, 1, "agent", 5, 3, None, 999999),
+             (busy_id, 1, "agent", 5, 4, '{"Author": "busy", "Content": {"parts": [{"text": "It is not ready '
+              'because its child failed."}]}}', 90)]
+
     def run(sql, **k):
+        if "AS delegated" in sql:
+            return acensus
+        if "dense_rank" in sql:
+            return arows
         if "WITH q AS" in sql:
             return qrows
         if "AS user_authored" in sql:
@@ -431,22 +466,39 @@ def full_run(monkeypatch):
     monkeypatch.setattr(E, "KAGENT_DB_USER", "u")
     monkeypatch.setattr(E, "KAGENT_DB_PASSWORD", "p")
 
+    assessment = {"summary": "busy mostly answers", "servedWell": "readiness questions",
+                  "failurePatterns": [{"pattern": "skips the child", "category": "made-up-category",
+                                       "conversations": [1, 77],
+                                       "examples": [{"conversation": 1, "excerpt": "its child failed"},
+                                                    {"conversation": 1, "excerpt": "an invented quote here"}]}],
+                  "promptFindings": [{"finding": "no rule to name the failing child",
+                                      "promptExcerpt": "Always cite the tool you used", "evidence": "c1",
+                                      "suggestedChange": "add: name the failing child", "conversations": [1]}],
+                  "recurringNeeds": [{"need": "why is my composition not ready", "conversations": [1]}]}
     payload = {"summary": "one real finding and one aimed at a missing repo",
                "proposals": [
                    dict(_prop(content=REAL, repo="krateo-platformops/snowplow"),
                         subject="Snowplow/SAR Unauthorized", confidence="high"),
                    dict(_prop(kind="Documentation", subject="kagent:agent never used", fmt="markdown",
                               content="# x", repo="krateo-platformops/does-not-exist"), confidence="low"),
+                   dict(_prop(kind="Prompt", subject="busy/skips-the-child", fmt="diff", content="+ name it",
+                              repo="krateo-platformops/guessed", path="prompts/busy.md"), confidence="medium"),
                ]}
+    asked = []
     monkeypatch.setattr(M.autopilot, "service_jwt", lambda: None)
-    monkeypatch.setattr(M.autopilot, "ask", lambda *a, **k: (
-        payload, "{}", A.token_usage({"metadata": {"kagent_usage_metadata": {
-            "promptTokenCount": 9, "candidatesTokenCount": 3, "totalTokenCount": 12}}})))
+    def ask(system, message, run_name, token=None, context=None, timeout=None):
+        asked.append((context, message))
+        if context:                                    # an analyse call
+            return assessment, "{}", {"inputTokens": 40, "outputTokens": 5, "totalTokens": 45}
+        return payload, "{}", A.token_usage({"metadata": {"kagent_usage_metadata": {
+            "promptTokenCount": 9, "candidatesTokenCount": 3, "totalTokenCount": 12}}})
+    monkeypatch.setattr(M.autopilot, "ask", ask)
     monkeypatch.setattr(M.publish, "publish_version", lambda: "v1-8-53")
     monkeypatch.setattr(targets, "requests", types.SimpleNamespace(head=lambda url, **k: types.SimpleNamespace(
         status_code=404 if "does-not-exist" in url else 200)))
 
     assert M.main() == 0
+    api.asked = asked
     return api
 
 
@@ -462,7 +514,18 @@ def test_every_reviewrun_status_the_service_writes_is_declared(full_run):
     assert ks["questions"] == 1 and ks["shapes"]["unparseable"] == 1 and ks["droppedMessages"] > 0, ks
     assert final["evidence"]["kubernetes"]["returned"] == 2, "an Alert and one page root"
     assert final["summary"] and final["model"]["inputTokens"] == 9
-    assert [s["name"] for s in final["steps"]] == ["gather", "ask", "validate", "publish", "record"]
+    assert [s["name"] for s in final["steps"]] == ["gather", "analyse", "ask", "validate", "publish", "record"]
+    aa = final["evidence"]["agent-analysis"]
+    (busy,) = aa["agents"]
+    assert aa["ok"] and aa["returned"] == 1 and aa["skipped"][0]["reason"] == "not deployed"
+    assert busy["droppedChars"] > 999999 and busy["droppedSessions"] == 1 and busy["tokens"]["totalTokens"] == 45
+    assert busy["promptRepo"] == "krateo-agentiko/busy-agent" and busy["unverifiedExamples"] == 1
+    (a,) = final["agentAnalysis"]["assessments"]
+    assert a["failurePatterns"][0]["category"] == "other" and a["failurePatterns"][0]["count"] == 1
+    assert a["promptFindings"][0]["promptExcerpt"] and a["recurringNeeds"]
+    assert final["usage"]["total"] == {"calls": 2, "reportedCalls": 2, "inputTokens": 49,
+                                       "outputTokens": 8, "totalTokens": 57}
+    assert ks["questionsFolded"] == 1
     assert final["proposals"]["superseded"] == 1
     for st in writes:
         assert _undeclared(st, schema, "status") == []
@@ -471,7 +534,7 @@ def test_every_reviewrun_status_the_service_writes_is_declared(full_run):
 def test_every_proposal_the_service_writes_is_declared(full_run):
     schema = _crd_schema("proposal.crd.yaml")["properties"]
     created = [b for plural, b in full_run.creates if plural == "proposals"]
-    assert len(created) == 2
+    assert len(created) == 3
     for body in created:
         assert _undeclared(body["spec"], schema["spec"], "spec") == []
     statuses = [b["status"] for plural, _, b in full_run.status_writes if plural == "proposals"]
@@ -494,7 +557,26 @@ def test_a_missing_repo_is_recorded_and_written_but_gets_no_claim(full_run):
     (cond,) = [c for c in st["conditions"] if c["type"] == "TargetResolved"]
     assert (cond["status"], cond["reason"]) == ("False", "NotFoundOrPrivate")
     claims = [b for plural, b in full_run.creates if plural == "builderpublishes"]
-    assert [c["spec"]["target"]["repo"] for c in claims] == ["snowplow"]
+    assert [c["spec"]["target"]["repo"] for c in claims] == ["snowplow", "busy-agent"]
+
+
+def test_a_prompt_proposal_goes_to_the_repo_the_agent_declares(full_run):
+    """The model guessed krateo-platformops/guessed; the Agent's annotation names the prompt's home."""
+    (prompt,) = [b for plural, b in full_run.creates if plural == "proposals" and b["spec"]["kind"] == "Prompt"]
+    assert prompt["spec"]["target"]["repo"] == "krateo-agentiko/busy-agent"
+
+
+def test_the_main_review_gets_the_assessment_and_not_the_transcript(full_run):
+    """The whole point of the stage: conversations are read in their own calls, and only the bounded
+    assessment reaches the main corpus — while the questions it covered are not quoted there twice."""
+    analyse_msgs = [m for ctx, m in full_run.asked if ctx]
+    (main_msg,) = [m for ctx, m in full_run.asked if not ctx]
+    assert len(analyse_msgs) == 1 and "It is not ready because its child failed." in analyse_msgs[0]
+    assert "yyyyyyyyyy" in analyse_msgs[0], "the analysis saw the tool result"
+    assert 'source="agent-analysis"' in main_msg and "FAILURE [other] in 1 conversation(s)" in main_msg
+    assert "because its child failed" not in main_msg.replace('"its child failed"', ""), \
+        "only the verified excerpt may appear, never the reply"
+    assert "yyyyyyyyyy" not in main_msg, "a tool result reached the main review"
 
 
 def test_every_stats_key_evidence_assigns_by_subscript_is_declared():
