@@ -400,16 +400,33 @@ def test_findings_are_gated_on_the_agent_still_being_deployed():
 
     Delete an agent and its sessions remain, so staleness derived from sessions alone reports
     "IDLE 21d" forever for something that no longer exists — not a stale finding but a permanent false
-    one, which accumulates as agents are retired. Every finding must therefore be intersected with the
-    deployed set, and only `never` was when this was first shipped."""
-    import inspect, evidence
-    src = inspect.getsource(evidence.kagent_sessions)
-    body = src[src.index("live = set(deployed)"):src.index("# Problems first")]
-    for name in ("stale", "rare", "active"):
-        line = next(l for l in body.splitlines() if l.strip().startswith(f"{name} = "))
-        block = body[body.index(line):]
-        upto = block[:block.index("\n\n")] if "\n\n" in block else block
-        assert "k in live" in upto, f"{name} is not gated on the deployed set"
+    one, which accumulates as agents are retired. Every finding must be intersected with the deployed set.
+
+    Checked by parsing the AST rather than slicing source text. A text slice cannot tell which
+    comprehension a condition belongs to: the first version of this test sliced from one assignment to
+    the next blank line and passed even with the gate removed, because a NEIGHBOURING line still
+    contained the string it was looking for. That is a test that cannot fail, which is worse than none."""
+    import ast, inspect, textwrap, evidence
+
+    def gates_on_live(node):
+        """True if `k in live` appears anywhere inside THIS assignment's expression."""
+        for n in ast.walk(node):
+            if (isinstance(n, ast.Compare) and n.ops and isinstance(n.ops[0], ast.In)
+                    and isinstance(n.left, ast.Name) and n.left.id == "k"
+                    and isinstance(n.comparators[0], ast.Name) and n.comparators[0].id == "live"):
+                return True
+        return False
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(evidence.kagent_sessions)))
+    found = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            tgt = node.targets[0]
+            if isinstance(tgt, ast.Name) and tgt.id in ("stale", "rare", "active"):
+                found[tgt.id] = gates_on_live(node.value)
+    assert set(found) == {"stale", "rare", "active"}, f"assignments not found: {sorted(found)}"
+    for name, gated in sorted(found.items()):
+        assert gated, f"{name} is not gated on `k in live`"
 
 
 def test_unreadable_deployed_set_over_reports_rather_than_under_reports():
