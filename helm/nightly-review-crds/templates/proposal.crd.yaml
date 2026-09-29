@@ -58,8 +58,11 @@ spec:
                     REQUIRED, AND THE POINT OF THE WHOLE OBJECT. A proposal with no evidence is an
                     opinion, and alert-troubleshooter#30 is the record of what that costs: a report
                     asserted high confidence from an analysis whose tool calls had all failed. Each
-                    entry carries the QUERY, so a reviewer can re-run it and reach their own verdict
-                    instead of trusting the summary.
+                    entry names its SOURCE and what was seen there. It deliberately does NOT carry a
+                    query: that field existed until 0.1.16 and the model filled it with a plausible
+                    reconstruction, citing SQL this service had never issued. The real queries are
+                    recorded on the ReviewRun by the code that ran them, which is what a reviewer
+                    should re-run.
                   items:
                     type: object
                     required: [source, summary]
@@ -69,14 +72,35 @@ spec:
                       query:
                         type: string
                         maxLength: 4000
-                        description: The exact query or API call, so the claim is reproducible.
-                      observedCount: { type: integer }
+                        description: >-
+                          HISTORICAL, NO LONGER WRITTEN. Removed from the response contract in 0.1.16
+                          because the model invented it. The field stays declared on purpose: this
+                          schema is structural, so deleting it would PRUNE the value from every stored
+                          proposal on its next write — and 17 entries across the proposals on 057 still
+                          carry one. Those are the fabricated queries themselves, which are the record
+                          of why the field went away. Do not read a value here as something this
+                          service ran; the queries it actually issued are recorded on the ReviewRun.
+                      observedCount:
+                        type: integer
+                        description: >-
+                          MODEL-AUTHORED AND UNVERIFIED, like `confidence` (#14). It was once summed to
+                          decide whether `high` was earned; that check was arithmetic on this number,
+                          so any value the model wrote satisfied it. Useful as a rough sense of scale,
+                          worthless as corroboration.
                 confidence:
                   type: string
                   enum: [high, medium, low]
                   description: >-
-                    Must be justified by `evidence`, not asserted alongside it. A high confidence on a
-                    single low-count observation is a defect in the proposal, not a strong finding.
+                    THE MODEL'S OWN ESTIMATE, NOT A VERIFIED PROPERTY OF `evidence` (#14). Read it as
+                    the author's stated uncertainty and nothing more. The service does not check it and
+                    no longer pretends to: a cap used to demote `high` unless two evidence items or a
+                    summed `observedCount` of two backed it, but `observedCount` is model-authored and
+                    unbounded, so the cap was arithmetic on the claim it was supposed to test — it
+                    never fired once across the first nine real proposals. Treat `high` as a request
+                    for attention, not as evidence that attention is warranted; the evidence entries
+                    and the queries recorded on the run are what a reviewer should actually read.
+                    Deriving this from what the sources returned would describe the RUN, not the
+                    proposal, and would be the same value for every proposal in a night.
                 target:
                   type: object
                   required: [repo]
