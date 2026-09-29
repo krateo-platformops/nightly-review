@@ -95,6 +95,11 @@
         },
         "kagentDbName": {
           "type": "string"
+        },
+        "targetCheckApiUrl": {
+          "type": "string",
+          "default": "https://api.github.com",
+          "description": "GitHub API base used to check, anonymously, that each proposal's target.repo exists (recorded as the TargetResolved condition; never a reason to drop a proposal). A private repository answers 404 exactly like a missing one. Empty disables the check."
         }
       }
     },
@@ -152,6 +157,28 @@
         "modelConfig": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "portalAdminAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "title": "Portal admin access to proposals",
+      "description": "Binds a ClusterRole to these groups granting get/list/watch on Proposals and ReviewRuns and get/patch/update on proposals/status, so the portal can record a decision (phase, pullRequest, supersededBy) on a Proposal as the admin acting. A binding rather than aggregate-to-admin: Krateo admins hold cluster-admin through their group, not the built-in admin ClusterRole, so aggregation would not reach them.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [
+            "admins"
+          ]
         }
       }
     }

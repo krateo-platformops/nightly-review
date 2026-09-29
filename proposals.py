@@ -10,6 +10,8 @@ import re
 
 import yaml
 
+from prompt import ALERT_API_VERSION
+
 # ---------------------------------------------------------------------------------------------
 # 1. WHERE A PROPOSAL MAY LAND
 # ---------------------------------------------------------------------------------------------
@@ -126,19 +128,140 @@ def fingerprint(proposal):
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
-def classify(proposal, by_fingerprint, by_target):
-    """(action, prior name). THREE OUTCOMES, WHERE THE CODE USED TO SEE TWO — and the missing third is
-    why `superseded` was reported as a hardcoded 0 every night while its own docstring described a
-    mechanism that did not exist. Identical to something already open is a duplicate and is dropped.
-    Aimed at the same file with a DIFFERENT body is a replacement: the open one is stale and is marked
-    Superseded, rather than left beside its own successor for a human to reconcile."""
+# ---------------------------------------------------------------------------------------------
+# 3b. SUBJECT — what a proposal is ABOUT, independent of where it would land
+# ---------------------------------------------------------------------------------------------
+# THE TARGET WAS NEVER A STABLE KEY FOR A FINDING, and the proposals on 057 are the measurement. One
+# chart-inspector failure produced five Alert proposals across four repositories
+# (installer-chart-inspector twice, sre-alerts, observability, monitoring), four of them still open on
+# 2026-09-29 — each a different target_key, so each one looked new, and none superseded another. The model chooses the repository
+# afresh every night; it is a weak signal of identity. What stays the same is the FINDING: which
+# component, failing how.
+#
+# ONE NORMALISED STRING, `component/signal`, rather than a {service, signal} object. It is compared for
+# equality and nothing else, so structure buys nothing the separator does not; one string is one CRD
+# field, one printer column, one selector a portal can filter on, and one thing to eyeball in `kubectl
+# get`. Both halves are lowercase kebab so the model's casing and punctuation cannot split one finding
+# into two: `Snowplow/SubjectAccessReview Unauthorized` and `snowplow:subjectaccessreview-unauthorized`
+# are the same subject.
+_SLUG_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_SLUG_NON = re.compile(r"[^a-z0-9]+")
+SUBJECT_MAX = 160
+
+
+def _slug(text):
+    """CannotObserveExternalResource -> cannot-observe-external-resource; `HTTP 500!` -> http-500.
+    CamelCase is split BEFORE lowercasing, because event reasons arrive CamelCase from Kubernetes and
+    kebab from the model's paraphrase of them, and the two must meet."""
+    return _SLUG_NON.sub("-", _SLUG_CAMEL.sub("-", text).lower()).strip("-")
+
+
+def normalise_subject(value):
+    """`component/signal`, normalised, or None when there is nothing usable to normalise.
+
+    REWRITES, NEVER REFUSES. A colon where a slash was asked for, capitals, spaces — all folded. Only a
+    value with no separator, or with an empty half after folding, comes back None, and None is a
+    legitimate state: it is what every proposal written before this field existed carries, and
+    subject_key guarantees it never groups."""
+    if not isinstance(value, str):
+        return None
+    m = re.match(r"\s*([^/:]+)[/:](.+)", value)
+    if not m:
+        return None
+    component, signal = _slug(m.group(1)), _slug(m.group(2))
+    if not component or not signal:
+        return None
+    return f"{component}/{signal}"[:SUBJECT_MAX]
+
+
+def subject_key(proposal):
+    """(kind, subject), or None — AND None MUST NEVER BE A KEY. The twenty proposals on 057 that predate
+    this field all carry no subject; if a missing subject compared equal to another missing subject,
+    the first new proposal of each kind would supersede every legacy one of that kind in one night.
+
+    KIND IS PART OF THE KEY on purpose. An Alert and a Documentation proposal about the same failure are
+    two halves of one answer, not successive opinions on one question, and neither should retire the
+    other."""
+    subject = proposal.get("subject")
+    if not subject:
+        return None
+    return "\x1f".join([proposal["kind"], subject])
+
+
+def classify(proposal, by_fingerprint, by_target, by_subject=None):
+    """(action, priors). THREE OUTCOMES, WHERE THE CODE USED TO SEE TWO — and the missing third is why
+    `superseded` was reported as a hardcoded 0 every night while its own docstring described a
+    mechanism that did not exist.
+
+    - Identical to something already open is a duplicate: ("dedup", name). The fingerprint wins over
+      everything, because an exact repeat is not a new opinion however it is labelled.
+    - The same FINDING (kind + subject) as a Proposed one from an earlier night, or the same FILE with a
+      different body, is a replacement: ("supersede", [names]). The open ones are stale and are marked
+      Superseded rather than left beside their own successor for a human to reconcile. A LIST, because
+      the two keys can each name a different prior and both are stale.
+    - Otherwise ("new", None)."""
     fp = fingerprint(proposal)
     if fp in by_fingerprint:
         return "dedup", by_fingerprint[fp]
+    priors = []
+    key = subject_key(proposal)
+    if key is not None and by_subject:
+        priors += [p["name"] for p in by_subject.get(key, ()) if p.get("fingerprint") != fp]
     prior = by_target.get(target_key(proposal))
-    if prior and prior.get("fingerprint") != fp:
-        return "supersede", prior["name"]
+    if prior and prior.get("fingerprint") != fp and prior["name"] not in priors:
+        priors.append(prior["name"])
+    if priors:
+        return "supersede", priors
     return "new", None
+
+
+# ---------------------------------------------------------------------------------------------
+# 3c. THE ALERT KIND (#24)
+# ---------------------------------------------------------------------------------------------
+# Kinds and groups that are alert-shaped and dead here. Every one of the thirteen Alert proposals on 057
+# on 2026-09-29 was one of these; see prompt.ALERT_KIND for why none of them can fire on this platform.
+FORBIDDEN_ALERT_KINDS = frozenset({"PrometheusRule"})
+FORBIDDEN_ALERT_GROUPS = frozenset({"monitoring.krateo.io", "monitoring.coreos.com"})
+_FORBIDDEN_TEXT = re.compile(r"\bPrometheusRule\b|\bmonitoring\.krateo\.io\b|\bmonitoring\.coreos\.com\b")
+
+
+def alert_kind_violation(proposal):
+    """A sentence saying why change.content carries an alert this platform cannot evaluate, or None.
+
+    TWO RULES, SCOPED DIFFERENTLY ON PURPOSE.
+    - Any proposal whose YAML declares a PrometheusRule or an object in a forbidden group is refused,
+      whatever its kind: a dead alert smuggled into a Policy proposal is as dead as one in an Alert.
+    - An ALERT proposal must declare nothing but observability.krateo.io/v1alpha1 Alert. Not applied to
+      other kinds, because `alerts.widgets.templates.krateo.io` is a real portal widget called Alert and
+      a Widget proposal may legitimately carry one.
+    A document with neither kind nor apiVersion is not an object declaration and is left alone. Content
+    that is not parseable YAML — a diff, markdown — is scanned as text for the forbidden names, but only
+    for Alert proposals: documentation may mention PrometheusRule in prose, an Alert may not ship one."""
+    change = proposal.get("change") or {}
+    content = change.get("content") or ""
+    docs = None
+    if change.get("format") == "yaml":
+        try:
+            docs = [d for d in yaml.safe_load_all(content) if isinstance(d, dict)]
+        except yaml.YAMLError:
+            docs = None
+    if docs is None:
+        if proposal.get("kind") == "Alert" and _FORBIDDEN_TEXT.search(content):
+            return (f"an Alert proposal must carry an {ALERT_API_VERSION} Alert; its content names "
+                    f"{_FORBIDDEN_TEXT.search(content).group(0)}, which nothing on this platform evaluates")
+        return None
+    for d in docs:
+        kind, api = d.get("kind"), d.get("apiVersion")
+        if kind is None and api is None:
+            continue
+        group = str(api or "").split("/")[0]
+        if kind in FORBIDDEN_ALERT_KINDS or group in FORBIDDEN_ALERT_GROUPS:
+            return (f"declares {api}/{kind}, which nothing on this platform evaluates — the only alert "
+                    f"kind is {ALERT_API_VERSION} Alert")
+        if proposal.get("kind") == "Alert" and (kind, api) != ("Alert", ALERT_API_VERSION):
+            return (f"an Alert proposal must carry only {ALERT_API_VERSION} Alert objects; "
+                    f"it declares {api}/{kind}")
+    return None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -206,6 +329,25 @@ def validate_batch(payload, schema_check, item_check=None):
         # of the service's own query names, validated against a per-run enum of the queries that
         # actually ran (see prompt.py — the same move that removed evidence[].query). The grounded
         # per-proposal prior is the merge/reject history, which is #21.
+
+        # REFUSED WHOLE, WITH THE REASON, because a PrometheusRule is not a draft of an Alert that a
+        # reviewer could fix in review — it is a different system, and merging it adds an alert that
+        # never fires while looking like coverage. The note is what tells the next prompt change it is
+        # still happening. Checked AFTER redaction so the note cannot quote a secret.
+        dead = alert_kind_violation(clean)
+        if dead:
+            notes.append(f"DROPPED proposal[{i}] ({clean.get('kind')}): {dead}")
+            continue
+
+        # Normalised, not validated: see normalise_subject. A subject that folds to nothing is kept as
+        # null WITH A NOTE, so the proposal survives and the run still says that one of its findings
+        # can never be matched against tomorrow's.
+        subject = normalise_subject(clean.get("subject"))
+        if subject is None:
+            clean.pop("subject", None)
+            notes.append(f"proposal[{i}] carried no usable subject; it will not group with later nights")
+        else:
+            clean["subject"] = subject
 
         clean["fingerprint"] = fingerprint(clean)
         kept.append(clean)

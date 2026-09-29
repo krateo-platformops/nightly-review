@@ -82,8 +82,35 @@ def extract_json(text):
     return json.loads(text[start:end + 1])
 
 
+def token_usage(result):
+    """{inputTokens, outputTokens, totalTokens} from one A2A event's result, or {} if it carries none.
+
+    THE OLD READER LOOKED FOR `result.usage`, WHICH KAGENT NEVER SENDS, so every ReviewRun on 057 recorded
+    {name: "", inputTokens: 0, outputTokens: 0} — a measurement of nothing, written as if it were one.
+    kagent's python runtime (0.10.1, the reviewer's) serialises the ADK event's usage into
+    `metadata.kagent_usage_metadata` — the genai UsageMetadata by alias, so promptTokenCount /
+    candidatesTokenCount / totalTokenCount — on each event that has it, and again on the final status
+    update. The last one seen is kept: for a reviewer that holds no tools there is one model call per
+    turn, so the last usage IS the turn's.
+
+    NO MODEL NAME, because the response carries none: the metadata names the app, session and author,
+    never the model that answered. The name the chart configured is not what answered, and writing it
+    here would be the same kind of guess the zeros were — so the field is gone from the run."""
+    meta = (result or {}).get("metadata") or {}
+    um = meta.get("kagent_usage_metadata")
+    if not isinstance(um, dict):
+        return {}
+    out = {}
+    for src, dst in (("promptTokenCount", "inputTokens"), ("candidatesTokenCount", "outputTokens"),
+                     ("totalTokenCount", "totalTokens")):
+        if isinstance(um.get(src), int):
+            out[dst] = um[src]
+    return out
+
+
 def ask(system, user_message, run_name, token=None):
-    """One JSON-RPC message/stream turn. Returns (parsed_json, raw_text, usage)."""
+    """One JSON-RPC message/stream turn. Returns (parsed_json, raw_text, usage) — usage is {} when the
+    agent reported none, never zeros standing in for "unknown"."""
     payload = {
         "jsonrpc": "2.0",
         "id": str(uuid.uuid4()),
@@ -144,8 +171,9 @@ def ask(system, user_message, run_name, token=None):
         for msg in result.get("history") or []:
             if msg.get("role") != "user":
                 candidates.extend(texts(msg))
-        if isinstance(result.get("usage"), dict):
-            usage = result["usage"]
+        found = token_usage(result)
+        if found:
+            usage = found
 
     # A REFUSAL OR A CRASH MUST NOT LOOK LIKE SILENCE. If the task ended in a terminal non-success state,
     # say so with the state name, even when some text did arrive.
