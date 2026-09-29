@@ -169,8 +169,12 @@ where they would evict the ClickHouse and Kubernetes evidence that produced ever
   counted in `unverifiedExamples`. Tool errors, unanswered conversations and repeated identical calls are
   **measured** from the events and given to the model as fact.
 - **Redacted before anything leaves the process**, per message and before any cut — replies, tool
-  arguments and tool results included. The redactor gained two families for this: JSON-quoted keys
-  (`"password": "…"` in tool arguments) and prose (`my password is …`, when the value carries a digit).
+  arguments, tool results and the prompt included. The per-agent call is a new egress point (whole
+  conversations leave the process there), and a test stands a fake reviewer at it. The redactor now
+  matches any identifier CONTAINING a key word — `DB_PASSWORD=`, `PGPASSWORD=`, `MY_API_KEY=`,
+  `"dbPassword": "…"`, `db_password: …` all passed before, because `\b` never matched after `_` or
+  inside a word — plus JSON-quoted keys and prose (`my password is …`, when the value carries a digit).
+  The key must be followed by `=` or `:`, so "how do I reset my password?" is left alone.
 - **Budgets** (`config.agentAnalysis`, all declared in `values.schema.json`): agents per run (8), sessions
   per agent (20), events per conversation (40: first half and last half), characters per agent (80k),
   per message (2k), per tool result (800, the hard one), per tool call's arguments (400), prompt (60k), a
@@ -198,8 +202,8 @@ where they would evict the ClickHouse and Kubernetes evidence that produced ever
   excerpts per pattern), `status.usage` (every model call with the tokens it reported, and a total that
   says how many calls it covers), and an `analyse` entry in `status.steps`.
 - **RBAC:** `get` on ConfigMaps in the release namespace (never `list`, never Secrets; narrowed to
-  `config.agentAnalysis.promptConfigMaps` when set). Agents are read with the cluster-wide `list` #28
-  already grants.
+  `config.agentAnalysis.promptConfigMaps` when set), and `get` on Agents beside the cluster-wide `list`
+  granted since 0.1.19.
 
 **The instructions now reach the model.** Both calls send their instructions as the first part of the
 A2A message. They used to travel in `params.metadata.systemPrompt`, which kagent 0.10.1 never reads (its

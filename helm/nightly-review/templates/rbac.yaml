@@ -111,9 +111,10 @@ subjects:
 # CLUSTER-SCOPED, LIST ONLY, ON ONE KIND. kagent Agents are what the session source compares against to
 # find agents that are DEPLOYED BUT HAVE NEVER BEEN USED — an agent with no session has no row to group,
 # so the only way to see it is to read the deployed set. Cluster-scoped because agents need not live in
-# this namespace. The analyse stage reads each Agent's SPEC from the same list (systemMessage,
-# promptTemplate, annotations naming its prompt's repository), so it needs no `get`: one list per run
-# already returns every field.
+# this namespace. The analyse stage reads each Agent's SPEC (systemMessage, promptTemplate, annotations
+# naming its prompt's repository); it does so from the same one-per-run list, and `get` is granted
+# beside it so a single Agent can be re-read by name without widening anything — both are read-only on
+# one kind. `list` has been here since 0.1.19.
 #
 # NOT gated on dryRun, unlike the CRD read below: this is evidence gathering and happens on every run
 # whether or not anything is published.
@@ -129,7 +130,7 @@ metadata:
 rules:
   - apiGroups: ["kagent.dev"]
     resources: ["agents"]
-    verbs: ["list"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

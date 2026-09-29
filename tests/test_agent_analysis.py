@@ -603,3 +603,76 @@ def test_prose_redaction_leaves_ordinary_sentences_alone():
     from proposals import redact
     s = "The password is required and the token is refreshed hourly."
     assert redact(s) == s
+
+
+# --- ENV-VAR-STYLE SECRET NAMES -----------------------------------------------------------------
+# `\b(password|…)` never matched between `_` and a letter, nor inside PGPASSWORD: DB_PASSWORD=x passed
+# while password=x was redacted. An `env` dump in a tool result is exactly that shape, and on 057
+# KAGENT_DB_PASSWORD holds admin's password. Values are assembled here so no literal is a credential.
+V1, V2, V3 = "hunter2" + "hunter2", "abcdefgh" + "1234", "P@ss!w0" + "rd#9x"
+
+
+@pytest.mark.parametrize("text,secret", [
+    (f"password={V1}", V1),
+    (f"DB_PASSWORD={V1}", V1),
+    (f"PGPASSWORD={V1}", V1),
+    (f"MY_API_KEY={V2}", V2),
+    (f"CLICKHOUSE_PASSWORD={V2}", V2),
+    (f"export KAGENT_DB_PASSWORD='{V3}'", V3),
+    (f'{{"PGPASSWORD": "{V1}"}}', V1),
+    (f"spec:\n  db_password: {V2}\n", V2),
+    (f"clientSecret: {V1}", V1),
+    (f"ADMIN_PASSWORD_B64={V2}", V2),                 # a word AFTER the key word, too
+    (f'{{"apiKeyValue": "{V1}"}}', V1),
+])
+def test_an_identifier_containing_a_secret_word_is_redacted(text, secret):
+    from proposals import redact
+    out = redact(text)
+    assert secret not in out and "<REDACTED>" in out, out
+
+
+def test_an_env_dump_loses_every_secret_and_keeps_everything_else():
+    from proposals import redact
+    dump = "\n".join([f"HOME=/home/app", f"KAGENT_DB_PASSWORD={V3}", f"PGPASSWORD={V1}",
+                      f"OPENAI_API_KEY={V2}", "LOG_LEVEL=debug", "KAGENT_DB_HOST=kagent-postgresql"])
+    out = redact(dump)
+    for v in (V1, V2, V3):
+        assert v not in out, out
+    assert "HOME=/home/app" in out and "LOG_LEVEL=debug" in out and "KAGENT_DB_HOST=kagent-postgresql" in out
+    assert "KAGENT_DB_PASSWORD=<REDACTED>" in out, "the NAME stays readable; only the value goes"
+
+
+@pytest.mark.parametrize("prose", [
+    "How do I reset my password?",
+    "The password is required and the token is refreshed hourly.",
+    "Rotate the DB_PASSWORD secret, then restart the pod.",
+    "password: see below",
+    "Please update your database_password immediately afterwards.",
+])
+def test_ordinary_prose_about_passwords_is_left_alone(prose):
+    from proposals import redact
+    assert redact(prose) == prose
+
+
+def test_no_raw_secret_reaches_the_analysis_call(monkeypatch):
+    """The per-agent call is a NEW EGRESS POINT: whole conversations leave the process there, where #32
+    only ever sent questions. Everything — the question, the reply, the tool arguments, the tool result
+    and the prompt — is redacted before ask() is called. The fake reviewer is the assertion."""
+    env_dump = f"HOME=/root\nKAGENT_DB_PASSWORD={V3}\nPGPASSWORD={V1}\nclient-key-data: {KEY_DATA}\n"
+    rows = [_row(_key("a-agent"), 1, i + 1, d, 4) for i, d in enumerate([
+        _go("user", {"text": f"why does it fail? my DB_PASSWORD={V1} and token {JWT}"}),
+        _go("a_agent", {"functionCall": {"name": "exec", "args": {"cmd": "env", "env": {"MY_API_KEY": V2}}}}),
+        _go("a_agent", {"functionResponse": {"name": "exec", "response": {"content": [{"text": env_dump}]}}}),
+        _py("a_agent", {"text": f"Found it: CLICKHOUSE_PASSWORD={V2} is wrong; the password is {V1}."}),
+    ])]
+    agents = {"items": [_agent("a-agent", decl={"systemMessage": f"Connect with PGPASSWORD={V3}."})]}
+    received = []
+
+    def reviewer(system, message, run, token, context=None, timeout=None):
+        received.append(system + message)
+        return GOOD, "{}", {}
+    _, stats, _ = _stage(monkeypatch, [(_key("a-agent"), 1, 4, 0)], rows, agents, reviewer)
+    assert stats["returned"] == 1 and len(received) == 1
+    for secret in (V1, V2, V3, JWT[:20], KEY_DATA[:40]):
+        assert secret not in received[0], f"{secret[:6]}… reached the reviewer"
+    assert "KAGENT_DB_PASSWORD=<REDACTED>" in received[0] and "HOME=/root" in received[0]

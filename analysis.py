@@ -23,6 +23,12 @@ excerpt is checked against the transcript it claims to come from, and one that c
 dropped and counted. Tool errors, unanswered conversations and repeated identical calls are measured
 here from the events themselves and handed to the model as fact.
 
+THE PER-AGENT CALL IS A NEW EGRESS POINT. Until this stage, only people's questions ever left the
+process towards a model; here whole conversations do, and tool results are where `env` dumps, echoed
+Secrets and kubeconfigs come back (on 057, KAGENT_DB_PASSWORD holds admin's password). So EVERYTHING
+that goes into the call — every message part and the agent's prompt — passes through redact() first,
+and test_no_raw_secret_reaches_the_analysis_call stands a fake reviewer at that point and asserts it.
+
 REDACTION BEFORE ANYTHING LEAVES THE PROCESS, per message and BEFORE any cut (the #32 rule: a token cut
 in half no longer matches its pattern). It covers replies, tool arguments and tool results as well as
 questions — tool results are where kubeconfigs, Secrets and log lines with credentials come back.
