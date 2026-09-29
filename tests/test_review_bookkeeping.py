@@ -330,39 +330,66 @@ def test_the_contract_no_longer_asks_the_model_for_a_query():
     assert "Carry the query that produced it" not in msg
 
 
-# --- kagent sessions from Postgres ------------------------------------------------------------------
-# The API implementation this replaced could only ever return the caller's own sessions, of which this
-# service has none, so it reported `empty` with a note every night. These assert the properties that
-# make the replacement safe, not that it returns rows — which needs a database.
+# --- kagent sessions: absence, not census -----------------------------------------------------------
+# The first version grouped sessions inside the window and the model ignored every row of it, because a
+# census contains no problem. These assert the properties that make the rewrite capable of a finding.
 def test_kagent_sessions_refuses_without_credentials():
-    """Not-configured is an ERROR, not a quiet skip: it must show up as degradation on the run."""
+    """Not-configured is an ERROR, not a quiet skip: it must show as degradation on the run."""
     import importlib, evidence
     importlib.reload(evidence)
     evidence.KAGENT_DB_USER = ""
     evidence.KAGENT_DB_PASSWORD = ""
-    body, stats = evidence.kagent_sessions({"from": "2026-01-01 00:00:00", "to": "2026-01-02 00:00:00"})
-    assert body is None
-    assert stats["ok"] is False and "not configured" in stats["error"]
+    body, stats = evidence.kagent_sessions(None, {"from": "2026-01-01", "to": "2026-01-02"})
+    assert body is None and stats["ok"] is False and "not configured" in stats["error"]
+
+
+def test_session_sql_is_not_windowed():
+    """THE BUG THE REWRITE FIXES. Filtering rows by the window hides exactly the agents worth reporting:
+    one idle for three weeks has no row in the window, so the fact that makes it interesting is what
+    excludes it. The window may only MARK rows (a FILTER inside the aggregate), never restrict them."""
+    from evidence import SESSION_SQL
+    # Anchor on FROM session: the FIRST "WHERE" in this query belongs to the FILTER inside an aggregate,
+    # not to the row filter, so slicing from index("WHERE") reads the wrong clause entirely.
+    tail = SESSION_SQL[SESSION_SQL.index("FROM session"):SESSION_SQL.index("GROUP BY")]
+    where = tail[tail.index("WHERE"):]
+    assert "deleted_at IS NULL" in where
+    assert ":frm" not in where and ":to" not in where, "the window must not filter rows"
+    assert "FILTER (WHERE updated_at >= :frm" in SESSION_SQL, "the window must still mark in-window rows"
+
+
+def test_session_sql_reports_last_seen_and_lifetime():
+    """Staleness needs both: last_seen to know how long, all_time to know whether it was ever real."""
+    from evidence import SESSION_SQL
+    assert "max(updated_at)" in SESSION_SQL and "count(*)" in SESSION_SQL
 
 
 def test_kagent_sessions_never_emits_user_ids():
-    """The corpus reaches a model and then a pull request body, so identities must not be in it.
-
-    Asserted against the SQL rather than a result set: the query selects count(DISTINCT user_id) and
-    must never select user_id itself. If someone adds it for 'a bit more context', this fails."""
+    """The corpus reaches a model and then a pull-request body, so identities must stay out of it."""
     from evidence import SESSION_SQL
     assert "count(DISTINCT user_id)" in SESSION_SQL
     assert "user_id" not in SESSION_SQL.replace("count(DISTINCT user_id)", "")
 
 
-def test_kagent_sessions_query_excludes_soft_deleted():
-    """kagent soft-deletes. Without this the source returns sessions users deleted."""
-    from evidence import SESSION_SQL
-    assert "deleted_at IS NULL" in SESSION_SQL
-
-
 def test_kagent_sessions_query_reads_only_the_session_table():
-    """The grant is the real enforcement, but the query must not even ask for content tables."""
+    """The grant is the real enforcement, but the query must not even ask for the content tables."""
     from evidence import SESSION_SQL as sql
     for forbidden in ("event", "task", "feedback", "lg_checkpoint"):
         assert f"FROM {forbidden}" not in sql and f"JOIN {forbidden}" not in sql
+
+
+def test_agent_id_mapping_matches_kagents_identifier_scheme():
+    """kagent stores agent_id as ConvertToPythonIdentifier(namespace + "/" + name). If this mapping is
+    wrong, EVERY deployed agent looks never-used and the source reports a fleet-wide false alarm — a
+    failure that is loud and completely wrong, so it is worth pinning to real observed values."""
+    def key(ns_name):
+        return ns_name.replace("-", "_").replace("/", "__NS__")
+    assert key("krateo-system/autopilot") == "krateo_system__NS__autopilot"
+    assert key("krateo-system/nightly-review-agent") == "krateo_system__NS__nightly_review_agent"
+    assert key("krateo-system/tk-swarm-ro") == "krateo_system__NS__tk_swarm_ro"
+
+
+def test_deployed_set_failure_degrades_rather_than_losing_the_source():
+    """If the Kubernetes read fails, the staleness half is still worth having. It must say so, not die."""
+    import inspect, evidence
+    src = inspect.getsource(evidence.kagent_sessions)
+    assert "deployed_err" in src and "idle/active figures are unaffected" in src

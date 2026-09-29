@@ -83,3 +83,34 @@ subjects:
     name: {{ include "nightly-review.fullname" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+---
+# CLUSTER-SCOPED, LIST ONLY, ON ONE KIND. kagent Agents are what the session source compares against to
+# find agents that are DEPLOYED BUT HAVE NEVER BEEN USED — an agent with no session has no row to group,
+# so the only way to see it is to read the deployed set. Cluster-scoped because agents need not live in
+# this namespace, and `list` only: the source never reads an Agent's spec, just its namespace and name.
+#
+# NOT gated on dryRun, unlike the CRD read below: this is evidence gathering and happens on every run
+# whether or not anything is published.
+#
+# This is the shape that bit alert-troubleshooter#31 — a component whose code read cluster-wide while its
+# chart shipped only a namespaced Role, so every pass 403'd and the correlation silently never ran. The
+# source degrades with a note rather than failing if this is missing, which makes the absence quiet;
+# that is exactly why the grant has to be here rather than assumed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-agents-read
+rules:
+  - apiGroups: ["kagent.dev"]
+    resources: ["agents"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-agents-read
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ include "nightly-review.fullname" . }}-agents-read }
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "nightly-review.fullname" . }}
+    namespace: {{ .Release.Namespace }}

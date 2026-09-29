@@ -52,7 +52,7 @@ def main():
     blocks = {}
     for name, (body, stats) in {
         "clickhouse": evidence.clickhouse(queries, window),
-        "kagent-sessions": evidence.kagent_sessions(window),
+        "kagent-sessions": evidence.kagent_sessions(api, window),
         "kubernetes": evidence.kubernetes(api),
     }.items():
         st["evidence"][name] = stats
