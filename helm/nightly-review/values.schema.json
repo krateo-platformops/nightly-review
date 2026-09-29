@@ -200,7 +200,7 @@
       "type": "object",
       "additionalProperties": false,
       "title": "Portal admin access to proposals",
-      "description": "Binds a ClusterRole to these groups granting get/list/watch on Proposals and ReviewRuns and get/patch/update on proposals/status, so the portal can record a decision (phase, pullRequest, supersededBy) on a Proposal as the admin acting. A binding rather than aggregate-to-admin: Krateo admins hold cluster-admin through their group, not the built-in admin ClusterRole, so aggregation would not reach them.",
+      "description": "Binds a ClusterRole to these groups granting get/list/watch/patch on Proposals, get/list/watch on ReviewRuns and get/patch/update on proposals/status. `patch` on the main resource is how the portal records a decision (spec.decision), because snowplow /call cannot reach the status subresource; decisionPolicy is what keeps that patch to the decision alone. A binding rather than aggregate-to-admin: Krateo admins hold cluster-admin through their group, not the built-in admin ClusterRole, so aggregation would not reach them.",
       "properties": {
         "enabled": {
           "type": "boolean",
@@ -215,6 +215,18 @@
           "default": [
             "admins"
           ]
+        }
+      }
+    },
+    "decisionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "title": "Admission policies on a proposal's decision",
+      "description": "Ships a ValidatingAdmissionPolicy that, for every requester other than this service's ServiceAccount, allows no spec change on a Proposal except spec.decision, forbids removing a decision or changing it other than PrOpen -> Rejected, and requires decidedBy to be the requesting user; and, where admissionregistration.k8s.io/v1 MutatingAdmissionPolicy is served (Kubernetes 1.36+), a MutatingAdmissionPolicy that stamps decidedBy and decidedAt from the request. Off leaves spec.decision unguarded: RBAC cannot narrow a patch to one field.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
         }
       }
     }

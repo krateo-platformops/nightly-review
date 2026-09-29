@@ -100,11 +100,15 @@ def test_the_open_phases_are_one_shared_constant():
 
 def test_every_phase_the_publisher_writes_is_declared_in_the_crd_enum():
     """The apiserver rejects an undeclared phase, and it rejects it at WRITE time — long after the
-    review has been done and paid for."""
-    import re, pathlib
-    crd = pathlib.Path("helm/nightly-review-crds/templates/proposal.crd.yaml").read_text()
-    m = re.search(r"phase:\s*\n\s*type: string\s*\n\s*enum: \[([^\]]+)\]", crd)
-    declared = set(m.group(1).replace(" ", "").split(","))
+    review has been done and paid for.
+
+    Read as YAML, by path. It was a regex for the first `phase:` enum in the file, which silently became
+    spec.decision.phase the day that field was declared above status."""
+    import pathlib
+    import yaml
+    crd = yaml.safe_load(pathlib.Path("helm/nightly-review-crds/templates/proposal.crd.yaml").read_text())
+    status = crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]
+    declared = set(status["properties"]["phase"]["enum"])
     assert publish.WRITTEN_PHASES <= declared, publish.WRITTEN_PHASES - declared
 
 

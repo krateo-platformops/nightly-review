@@ -122,11 +122,17 @@ subjects:
     namespace: {{ .Release.Namespace }}
 {{- if .Values.portalAdminAccess.enabled }}
 ---
-# WHAT THE PORTAL'S ADMINS NEED TO ACT ON A PROPOSAL. The portal opens a pull request per proposal and
-# records the decision on the Proposal itself — phase, pullRequest, decidedBy, supersededBy — and every
-# one of those is a STATUS write. So: read both kinds, and get/patch/update the proposals' status
-# subresource. Not create, not delete, and not the spec: a proposal's spec is the record of what the
-# review suggested, and nobody edits that after the fact, admin or not.
+# WHAT THE PORTAL'S ADMINS NEED TO ACT ON A PROPOSAL. Read both kinds, and PATCH THE PROPOSAL ITSELF:
+# the portal records a decision as spec.decision, because snowplow's /call builds only the main-resource
+# path and cannot reach proposals/status. Not create, not delete.
+#
+# `patch` IS WIDER THAN WHAT IT IS FOR, and that is deliberate rather than overlooked: RBAC has no
+# field granularity, so the same verb would let a button rewrite the evidence or the change. What a
+# person may actually change — spec.decision, and nothing else — is enforced in admission, by
+# templates/decision-policy.yaml, which also stamps who decided from the request.
+#
+# The status verbs stay: they are what an admin with kubectl, or a later portal that can reach the
+# subresource, would use, and removing them would break both for no gain.
 #
 # BOUND, NOT AGGREGATED, because of how admin identity is actually wired. On 057 the portal chart binds
 # the `admins` group to cluster-admin (ClusterRoleBinding cluster-admin-binding-krateo-system), and the
@@ -143,6 +149,9 @@ rules:
   - apiGroups: ["review.krateo.io"]
     resources: ["proposals", "reviewruns"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["review.krateo.io"]
+    resources: ["proposals"]
+    verbs: ["get", "patch"]
   - apiGroups: ["review.krateo.io"]
     resources: ["proposals/status"]
     verbs: ["get", "patch", "update"]

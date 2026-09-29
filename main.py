@@ -87,6 +87,18 @@ def main():
         "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes"],
                  "dryRun": DRY_RUN},
     })
+    # PEOPLE'S DECISIONS FIRST, AND ON EVERY RUN — before the gather, so a night whose ask or validation
+    # fails still brings status up to date. The portal records a decision in spec.decision and this
+    # copies it onto status. open_index reads spec.decision as authoritative anyway, so a failure here
+    # costs the status its freshness for a night and nothing else, which is why it is logged and does
+    # not fail the run.
+    try:
+        mirrored = publish.mirror_decisions(api)
+        if mirrored:
+            print(f"[run] mirrored {mirrored} decision(s) onto status", flush=True)
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[run] could not mirror decisions: {exc}", flush=True)
+
     st = {"phase": "Running", "startedAt": to.isoformat(), "evidence": {}}
     steps = _Steps(api, run_name, st)
     steps.start("gather")
@@ -190,15 +202,21 @@ def main():
     # Decided per proposal, BEFORE anything is written: which are duplicates, which replace an open
     # one, and whether the repository each names exists. The existence check lives in validate because
     # it is a fact about the proposal, not about publishing — a dry run needs it as much as a live one.
-    by_fingerprint, by_target, by_subject = publish.open_index(api, run_name)
-    plan, deduped, resolved = [], 0, {}
+    decided = {}
+    by_fingerprint, by_target, by_subject = publish.open_index(api, run_name, decided=decided)
+    plan, deduped, answered, resolved = [], 0, 0, {}
     for prop in kept:
-        # THREE OUTCOMES, NOT TWO. Identical to something already open is a duplicate; the same finding
-        # (kind + subject) or the same file with a different body is a replacement, and saying so is
-        # what `superseded` meant.
-        action, priors = P.classify(prop, by_fingerprint, by_target, by_subject)
+        # FOUR OUTCOMES. Identical to something already open is a duplicate; identical to something a
+        # person already answered is left alone; the same finding (kind + subject) or the same file
+        # with a different body is a replacement, and saying so is what `superseded` meant.
+        action, priors = P.classify(prop, by_fingerprint, by_target, by_subject, decided=decided)
         if action == "dedup":
             deduped += 1
+            continue
+        if action == "decided":
+            # Not counted as deduplicated: the ReviewRun declares that as "an OPEN proposal already
+            # carried the fingerprint", and this one is closed. The step message carries the count.
+            answered += 1
             continue
         target_cond = targets.resolve(prop["target"]["repo"], cache=resolved)
         plan.append((prop, priors if action == "supersede" else [], target_cond))
@@ -207,7 +225,8 @@ def main():
         for name in (priors if action == "supersede" else []):
             publish.forget(name, by_target, by_subject)
     unresolved = sum(1 for _, _, c in plan if c["status"] == "False")
-    steps.end("validate", message=f"{len(kept)} valid, {deduped} duplicate, {unresolved} unresolved target(s)"
+    steps.end("validate", message=f"{len(kept)} valid, {deduped} duplicate, {answered} already decided, "
+                                  f"{unresolved} unresolved target(s)"
                                   + (f", {len(notes)} note(s)" if notes else ""))
 
     # Resolved ONCE per run rather than per proposal: the BuilderPublish kind is version-pinned by the
@@ -274,7 +293,7 @@ def main():
                              "message": " | ".join(notes)[:2000],
                              "lastTransitionTime": _now().isoformat()}]
     _patch(api, run_name, st)
-    print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, "
+    print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, {answered} already decided, "
           f"{superseded} superseded, {unresolved} unresolved target(s), degraded={degraded}", flush=True)
     return 0
 
