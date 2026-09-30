@@ -177,7 +177,8 @@ config:
   # the repository's existing docs/ directory where it has one. Not seeded, because no repository could be
   # verified as theirs: tk-swarm-ro (hand-applied benchmark probe), the *-bench agents, the upstream-image
   # components whose wrapper charts publish from krateo-blueprints/charts (cert-manager, external-dns,
-  # agentgateway, gateway-api-crds), and the per-kind github-provider-kog-<kind>-controller Deployments
+  # agentgateway, gateway-api-crds — listed with reasons in drift/unmapped-components.yaml, which the
+  # drift workflow checks against the installer's pins), and the per-kind github-provider-kog-<kind>-controller Deployments
   # (runtime in oasgen-provider's rest-dynamic-controller, configuration in github-provider-kog: which one
   # a finding belongs to is not a lookup).
   destinations:
@@ -242,6 +243,24 @@ config:
       krateo-clickstack:   { repo: krateo-platformops/observability, pathPrefix: docs }
       clickhouse-operator: { repo: krateo-platformops/observability, pathPrefix: docs }
       mongodb-operator:    { repo: krateo-platformops/observability, pathPrefix: docs }
+      # --- the installer's own component names (component-pins.yaml), where they differ from the above ----
+      # Each pinned component has an entry or a reviewed reason in drift/unmapped-components.yaml; the
+      # `drift` workflow fails on a new pin that has neither. A -crd(s) component's chart lives beside
+      # its main chart (helm/<x>-crds, or charts/kagent-crds), so it shares that repository.
+      authn-crd:           { repo: krateo-platformops/authn, pathPrefix: docs }
+      oasgen-provider-crd: { repo: krateo-platformops/oasgen-provider, pathPrefix: docs }
+      frontend-crd:        { repo: krateo-platformops/frontend, pathPrefix: docs }
+      snowplow-crd:        { repo: krateo-platformops/snowplow, pathPrefix: docs }
+      git-provider-crd:    { repo: krateo-platformops/git-provider, pathPrefix: docs }
+      alert-troubleshooter-crd: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      nightly-review-crd:  { repo: krateo-platformops/nightly-review }
+      kagent-crds:         { repo: krateo-agentiko/kagent, pathPrefix: docs }
+      # The COMPOSITIONS' charts live in observability (charts/otel-collector-*); the collector's code, which
+      # the Deployment keys above point at, is otel-collector.
+      otel-collector-deployment: { repo: krateo-platformops/observability, pathPrefix: docs }
+      otel-collector-daemonset:  { repo: krateo-platformops/observability, pathPrefix: docs }
+      # Its chart is agentgateway-policies' helm/agentgateway-controller.
+      agentgateway-controller: { repo: krateo-agentiko/agentgateway-policies, pathPrefix: docs }
       # --- blueprints (krateo-blueprints) -----------------------------------------------------------------
       github-provider-kog: { repo: krateo-blueprints/github-provider-kog, pathPrefix: docs }
       krateo-marketplace-catalog: { repo: krateo-blueprints/marketplace, pathPrefix: krateo-marketplace-catalog }

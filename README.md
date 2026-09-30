@@ -163,6 +163,15 @@ under `config.destinations` or `config.targets`: core-provider copies schema def
 composition spec, so a default would be a destination nobody typed. The seeded map in values.yaml says
 where each entry was verified, and what was left out because no repository could be.
 
+**The map cannot drift silently.** A stale entry pointing at a real-but-wrong repository would resolve
+`RepoFound` and publish to the wrong place, quieter than a 404. The `drift` workflow
+(`.github/workflows/drift.yaml`: every pull request, every push to main, and daily, because what drifts
+is the installer) reads `chart/files/component-pins.yaml` and `ociRepo` from krateo-platformops/installer
+main and fails when a pinned component has neither an entry nor a reasoned line in
+`drift/unmapped-components.yaml`, when an entry's organisation (or its prompt's) differs from the one the
+pins publish that component from, or when the allowlist names a component that is mapped or no longer
+pinned. A failed fetch fails the job. The failure lists what to add.
+
 ## What keeps it honest
 
 - **Evidence is required**, `minItems: 1`. The **queries** a reviewer should re-run are the ones this
