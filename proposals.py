@@ -45,8 +45,10 @@ SECRET_PATTERNS = [
     # MY_API_KEY= and CLICKHOUSE_PASSWORD= all passed untouched (found on 057, 2026-09-29, where
     # KAGENT_DB_PASSWORD holds admin's password and tool output is where an `env` dump lands). Any
     # identifier CONTAINING a key word now matches, and the value runs to whitespace or a quote, so a
-    # password with punctuation is not redacted halfway.
-    (re.compile(r"(?i)\b([A-Za-z0-9_\-]*?(?:api[_\-]?key|client[_\-]?secret|access[_\-]?token|password|passwd)[A-Za-z0-9_\-]*)"
+    # password with punctuation is not redacted halfway. `token` and `secret_key` joined 2026-09-30: the
+    # review pod now holds a GitHub token as TARGET_CHECK_TOKEN, and a token whose VALUE matches no known
+    # shape (ghp_, JWT…) was left in the clear by a key list that only knew access_token.
+    (re.compile(r"(?i)\b([A-Za-z0-9_\-]*?(?:api[_\-]?key|client[_\-]?secret|access[_\-]?token|token|secret[_\-]?key|password|passwd)[A-Za-z0-9_\-]*)"
                 r"\s*[=:]\s*[\"\']?([^\s\"\',;]{8,})[\"\']?"), r"\1=<REDACTED>"),
     # THE SAME KEYS, JSON-QUOTED. The pattern above needs the colon right after the key, and in JSON a
     # quote sits between them — so `"password": "hunter2hunter2"` passed through untouched. That shape

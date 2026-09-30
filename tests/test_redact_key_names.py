@@ -51,3 +51,25 @@ def test_an_env_dump_redacts_every_secret_and_keeps_the_rest():
 ])
 def test_prose_about_passwords_survives(prose):
     assert P.redact(prose) == prose
+
+
+@pytest.mark.parametrize("line", [
+    f"TARGET_CHECK_TOKEN={V}",
+    f"GH_TOKEN={V}",
+    f"export GITHUB_TOKEN='{V}'",
+    f"aws_secret_key: {V}",
+])
+def test_a_token_named_key_is_redacted_whatever_the_value_looks_like(line):
+    """ghp_… is caught by its own shape; a token whose value matches no known shape was not."""
+    out = P.redact(line)
+    assert V not in out and "<REDACTED>" in out, out
+
+
+@pytest.mark.parametrize("prose", [
+    "tokens used: 14518",
+    "max_tokens=4096",
+    '"totalTokens": 221497',
+    "the token is required",
+])
+def test_token_counts_and_prose_survive(prose):
+    assert P.redact(prose) == prose
