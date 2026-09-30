@@ -110,10 +110,19 @@ TroubleshootingReport. The portal sends a merge-patch with the user's own token:
   `phase: Superseded` and `status.supersededBy`. `PrOpen` proposals are not superseded by subject,
   because a person's pull request hangs off them. Proposals with no subject (everything written before
   the field existed) **never** match each other.
-- **`TargetResolved`** records whether `target.repo` exists, checked with an *anonymous* GitHub API
-  request, because this service holds no credential. `False/NotFoundOrPrivate` (no public repo by that name — missing, or private) is a normal state, not a
-  rejection: the finding stands and wants re-aiming. A private repository answers 404 like a missing
-  one, and the condition message says so.
+- **`TargetResolved`** records whether `target.repo` exists, with one `HEAD` per repository per run.
+  With `config.targetCheck.tokenSecret` (values.yaml: `gh-token`/`token`; no schema default) the check is authenticated: the
+  kubelet injects that one Secret key as an env var (`secretKeyRef`, `optional: true`), so the
+  ServiceAccount still has no Secret read, and the token is used only as the check's `Authorization`
+  header — never logged, never in a prompt or a status (a test drives a whole run with a fake token to
+  hold that). Authenticated, a private repository the token can see is `True/RepoFound` and a 404 is
+  `False/RepoNotFound`; a rejected token (401) is `Unknown/CheckFailed`, never "not found". Without a
+  token, `False/NotFoundOrPrivate` (missing, or private — an anonymous check cannot tell). False is a
+  normal state, not a rejection: the finding stands and wants re-aiming.
+- **Fixed destinations.** For a kind in `config.targets` (values.yaml: `Alert` ->
+  `krateo-platformops/observability`, under `charts/krateo-observability/templates`) the service
+  replaces `target.repo` and the path's directory before fingerprinting, notes the move in
+  `ValidationNotes`, and tells the model up front; the model keeps choosing the file name.
 
 ## What keeps it honest
 
@@ -195,7 +204,13 @@ where they would evict the ClickHouse and Kubernetes evidence that produced ever
   `krateo.io/prompt-repo` (or `krateo.io/source-repo`, `org.opencontainers.image.source`), a Prompt
   proposal about that agent is aimed there, whatever the model chose, with a validation note. Otherwise
   the model proposes a repository and `TargetResolved` records what GitHub said — for agent prompts,
-  which live in private `krateo-agentiko` repositories, `NotFoundOrPrivate` is the expected answer.
+  which live in private `krateo-agentiko` repositories, that is `RepoFound` with the token and
+  `NotFoundOrPrivate` without it.
+- **Coverage, in words.** `status.coverage` counts what the review actually saw — conversations and
+  characters read of the total, agents skipped and why, sources cut or silent — and, whenever anything
+  was cut, its sentence opens `status.summary` (e.g. "Coverage: Based on 21 of 65 agent conversations;
+  3 agent(s) skipped: …"). The same sentence goes to the main model, so its proposals do not overclaim.
+  Computed by the service, never the model.
 - **On the ReviewRun:** `status.evidence.agent-analysis` (scope, counts, cuts, and one entry per agent:
   sessions, messages, droppedChars, tokens, patterns, error), `status.agentAnalysis.assessments` (bounded,
   for the portal; the one place a run keeps quoted content: at most three redacted 300-character
@@ -215,7 +230,8 @@ request converter uses `message.parts` only), so until this release the main rev
 See `helm/nightly-review/values.yaml`, and `values.schema.json`, whose defaults are what the installer
 applies. The values that matter: `clickhouseQueries` (the reviewable surface; adapt them to your
 schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
-`config.targetCheckApiUrl` (empty disables the existence check), `config.agentAnalysis` (the per-agent
+`config.targetCheckApiUrl` (empty disables the existence check), `config.targetCheck.tokenSecret`
+(the credential for it; empty name = anonymous), `config.targets` (fixed destinations per kind), `config.agentAnalysis` (the per-agent
 conversation budget; `maxAgents: 0` turns the stage off), `portalAdminAccess`, and `decisionPolicy`.
 
 Releases are cut by tag: `Chart.yaml` ships `CHART_VERSION`, and a `X.Y.Z` tag builds the image and

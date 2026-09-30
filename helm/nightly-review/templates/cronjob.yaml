@@ -66,6 +66,23 @@ spec:
                   value: {{ .Values.config.clickhouseUrl | quote }}
                 - name: TARGET_CHECK_API_URL
                   value: {{ .Values.config.targetCheckApiUrl | quote }}
+                {{- /* THE KUBELET READS THIS SECRET, NOT THE SERVICE. secretKeyRef is resolved by the
+                       node when the pod starts, under the kubelet's own authority, so it needs no RBAC:
+                       the ServiceAccount (templates/rbac.yaml) still holds no verb on Secrets, and a
+                       component whose corpus goes to a model still cannot read any Secret itself. It
+                       gets this one value and no other. `optional: true` so an install without the
+                       Secret (or the key) starts and checks anonymously, rather than failing to start. */}}
+                {{- /* dig, not a dotted path: an install whose values lack config.targetCheck (no schema
+                       default fills it — see values.schema.json) must render the anonymous check, not a
+                       nil-pointer error. */}}
+                {{- $tokenSecret := dig "targetCheck" "tokenSecret" dict .Values.config }}
+                {{- if $tokenSecret.name }}
+                - name: TARGET_CHECK_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: {{ $tokenSecret.name }}, key: {{ $tokenSecret.key | default "token" }}, optional: true }
+                {{- end }}
+                - name: TARGET_DESTINATIONS
+                  value: {{ .Values.config.targets | default dict | toJson | quote }}
                 - name: EVIDENCE_MAX_CHARS
                   value: {{ .Values.config.evidenceMaxChars | quote }}
                 # A JSON blob so the queries stay reviewable as data.

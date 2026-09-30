@@ -5,6 +5,7 @@ the apiserver's structural pruning.
 Each block names the defect it pins. The last one is the reason this file exists: evidence.*.queries
 was written by every run since 0.1.14 and pruned by every write, and nothing noticed for seven releases,
 because a pruned field produces no error — only an absence."""
+import json
 import os
 import pathlib
 import sys
@@ -276,12 +277,20 @@ def test_the_prompt_names_only_the_real_alert_kind_and_its_live_fields():
 
 # --- TargetResolved -----------------------------------------------------------------------------
 
-def _head(code, calls=None):
+def _head(code, calls=None, headers=None):
     def head(url, **kw):
         if calls is not None:
             calls.append(url)
+        if headers is not None:
+            headers.append(dict(kw.get("headers") or {}))
         return types.SimpleNamespace(status_code=code)
     return types.SimpleNamespace(head=head)
+
+
+@pytest.fixture(autouse=True)
+def _anonymous_by_default(monkeypatch):
+    """No test inherits a token from the shell that runs it."""
+    monkeypatch.delenv(targets.TOKEN_ENV, raising=False)
 
 
 @pytest.mark.parametrize("code,status,reason", [
@@ -317,11 +326,140 @@ def test_each_repository_is_asked_once_per_run(monkeypatch):
     assert len(calls) == 1
 
 
-def test_the_check_holds_no_credential():
-    """The point of choosing anonymous: this service still holds no git credential."""
-    src = (ROOT / "targets.py").read_text()
-    for gone in ("Authorization", "GITHUB_TOKEN", "secret"):
-        assert gone not in src.replace("Secret", "")
+def test_the_anonymous_check_sends_no_credential(monkeypatch):
+    """No token configured, no Authorization header — and a 404 stays honest about being anonymous."""
+    sent = []
+    monkeypatch.setattr(targets, "requests", _head(404, headers=sent))
+    assert targets.resolve("krateo-agentiko/autopilot")["reason"] == "NotFoundOrPrivate"
+    assert "Authorization" not in sent[0]
+
+
+@pytest.mark.parametrize("code,status,reason", [
+    (200, "True", "RepoFound"), (404, "False", "RepoNotFound"), (401, "Unknown", "CheckFailed"),
+    (403, "Unknown", "CheckFailed"), (502, "Unknown", "CheckFailed"),
+])
+def test_with_a_token_404_is_definitive_and_401_is_about_the_credential(monkeypatch, code, status, reason):
+    """rr-20260930-0200: both Prompt proposals aimed at private krateo-agentiko repositories that exist,
+    and both read NotFoundOrPrivate. With the platform's token a 200 there is RepoFound; a 404 is
+    RepoNotFound; a REJECTED token says nothing about the repository and must never read as not found."""
+    sent = []
+    monkeypatch.setenv(targets.TOKEN_ENV, "tok-under-test")
+    monkeypatch.setattr(targets, "requests", _head(code, headers=sent))
+    c = targets.resolve("krateo-agentiko/installer-agent")
+    assert (c["status"], c["reason"]) == (status, reason)
+    assert sent[0]["Authorization"] == "Bearer tok-under-test"
+    assert "tok-under-test" not in str(c)
+    if code == 401:
+        assert "credential" in c["message"] and "rejected" in c["message"]
+
+
+def test_a_blank_token_is_the_anonymous_check(monkeypatch):
+    """optional: true with the key present but empty must not send `Bearer ` and call 404 definitive."""
+    sent = []
+    monkeypatch.setenv(targets.TOKEN_ENV, "  ")
+    monkeypatch.setattr(targets, "requests", _head(404, headers=sent))
+    assert targets.resolve("o/r")["reason"] == "NotFoundOrPrivate" and "Authorization" not in sent[0]
+
+
+def test_the_rbac_still_grants_no_secret_read():
+    """The token arrives by secretKeyRef, which the KUBELET resolves. The ServiceAccount must stay unable
+    to read Secrets — that is the property the anonymous design protected, and it must survive this."""
+    import re
+    rbac = (ROOT / "helm/nightly-review/templates/rbac.yaml").read_text()
+    granted = re.findall(r"^\s*resources:\s*\[(.*)\]", rbac, re.M)
+    assert len(granted) > 5, "no rules found, so this test proves nothing"
+    assert not any("secrets" in g.lower() for g in granted), granted
+    cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
+    assert "name: TARGET_CHECK_TOKEN" in cron and "optional: true" in cron.split("TARGET_CHECK_TOKEN")[1][:300]
+
+
+# --- config.targets: where a kind lands is configuration -------------------------------------------
+
+OBS = {"Alert": {"repo": "krateo-platformops/observability", "pathPrefix": "charts/krateo-observability/templates"}}
+
+
+def test_an_alert_goes_where_the_chart_says_whatever_the_model_chose():
+    """rr-20260930-0200 aimed all three Alert proposals at `krateo-observability`: no owner, InvalidRepo."""
+    p = _prop(repo="krateo-observability", path="alerts/snowplow-sar-unauthorized.yaml")
+    note = targets.aim(p, OBS)
+    assert p["target"] == {"repo": "krateo-platformops/observability",
+                           "path": "charts/krateo-observability/templates/snowplow-sar-unauthorized.yaml"}
+    assert "krateo-observability/alerts/snowplow-sar-unauthorized.yaml -> krateo-platformops/observability" in note
+    assert "config.targets.Alert" in note
+
+
+def test_the_destination_is_the_charts_values_and_absent_means_no_retarget():
+    """The value lives in values.yaml ONLY. With no env (a key absent from the values), nothing moves."""
+    values = yaml.safe_load((ROOT / "helm/nightly-review/values.yaml").read_text())
+    assert values["config"]["targets"] == OBS
+    assert values["config"]["targetCheck"]["tokenSecret"] == {"name": "gh-token", "key": "token"}
+    assert targets.DESTINATIONS == {}, "the code must not carry its own default destination"
+    p = _prop(repo="krateo-observability", path="alerts/a.yaml")
+    assert targets.aim(p) is None and p["target"]["repo"] == "krateo-observability"
+
+
+# Keys this change added to values.schema.json. core-provider applies schema defaults straight into the
+# live composition CR spec, so a `default` there is a silent live override, not documentation — the
+# installer's check-fill-defaults.py exists because one (frontend agentgateway.enabled) broke Autopilot
+# for every user. Its rule, mirrored: no `default` at ANY depth under these keys.
+NEW_SCHEMA_KEYS = ("targets", "targetCheck")
+
+
+def _defaults(node, path):
+    out = []
+    if isinstance(node, dict):
+        if "default" in node:
+            out.append(path)
+        for k, v in node.items():
+            out += _defaults(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            out += _defaults(v, f"{path}[{i}]")
+    return out
+
+
+def test_no_new_schema_key_carries_a_default():
+    import json as _json
+    cfg = _json.loads((ROOT / "helm/nightly-review/values.schema.json").read_text())["properties"]["config"]["properties"]
+    for key in NEW_SCHEMA_KEYS:
+        assert key in cfg, f"config.{key} is not declared, so this test proves nothing"
+        assert _defaults(cfg[key], f"config.{key}") == []
+
+
+def test_the_chart_renders_the_anonymous_check_when_the_key_is_absent():
+    """No schema default fills config.targetCheck, so the template must survive its absence."""
+    cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
+    assert 'dig "targetCheck" "tokenSecret" dict .Values.config' in cron
+    assert ".Values.config.targetCheck." not in cron
+
+
+@pytest.mark.parametrize("path,want", [
+    ("../../.github/workflows/x.yaml", "x.yaml"), ("a/b c;$(id).yaml", "b-c-id-.yaml"),
+    ("", "snowplow-sar-unauthorized.yaml"), (None, "snowplow-sar-unauthorized.yaml"),
+])
+def test_the_model_keeps_only_a_safe_file_name(path, want):
+    """The prefix is the chart's; the file name is model output and becomes a path in a pull request."""
+    p = _prop(path=path)
+    targets.aim(p, OBS)
+    assert p["target"]["path"] == f"charts/krateo-observability/templates/{want}"
+
+
+def test_an_unconfigured_kind_is_left_alone():
+    p = _prop(kind="Documentation", repo="org/docs", path="d.md", fmt="markdown")
+    assert targets.aim(p, OBS) is None and p["target"] == {"repo": "org/docs", "path": "d.md"}
+
+
+def test_an_already_correct_target_is_no_note():
+    p = _prop(repo="krateo-platformops/observability", path="charts/krateo-observability/templates/x.yaml")
+    assert targets.aim(p, OBS) is None
+
+
+def test_the_prompt_says_the_destination_is_fixed():
+    import prompt
+    msg = prompt.build_user_message({"from": "a", "to": "b"}, {"x": "y"}, destinations=OBS)
+    assert "FIXED DESTINATIONS" in msg and "krateo-platformops/observability" in msg
+    assert "charts/krateo-observability/templates/" in msg
+    assert "FIXED DESTINATIONS" not in prompt.build_user_message({"from": "a", "to": "b"}, {"x": "y"})
 
 
 # --- status.model: measured or absent -----------------------------------------------------------
@@ -390,6 +528,10 @@ def _undeclared(value, schema, path=""):
 @pytest.fixture
 def full_run(monkeypatch):
     """One run through main.main() on every rich path, returning the fake apiserver."""
+    return _drive(monkeypatch)
+
+
+def _drive(monkeypatch):
     import datetime as dt
     import evidence as E
     import main as M
@@ -494,11 +636,16 @@ def full_run(monkeypatch):
             "promptTokenCount": 9, "candidatesTokenCount": 3, "totalTokenCount": 12}}})
     monkeypatch.setattr(M.autopilot, "ask", ask)
     monkeypatch.setattr(M.publish, "publish_version", lambda: "v1-8-53")
-    monkeypatch.setattr(targets, "requests", types.SimpleNamespace(head=lambda url, **k: types.SimpleNamespace(
-        status_code=404 if "does-not-exist" in url else 200)))
+    # The chart's values.yaml destinations, as the CronJob would pass them.
+    monkeypatch.setattr(targets, "DESTINATIONS", OBS)
+    heads = []
+    def head(url, **k):
+        heads.append((url, dict(k.get("headers") or {})))
+        return types.SimpleNamespace(status_code=404 if "does-not-exist" in url else 200)
+    monkeypatch.setattr(targets, "requests", types.SimpleNamespace(head=head))
 
     assert M.main() == 0
-    api.asked = asked
+    api.asked, api.heads = asked, heads
     return api
 
 
@@ -557,7 +704,7 @@ def test_a_missing_repo_is_recorded_and_written_but_gets_no_claim(full_run):
     (cond,) = [c for c in st["conditions"] if c["type"] == "TargetResolved"]
     assert (cond["status"], cond["reason"]) == ("False", "NotFoundOrPrivate")
     claims = [b for plural, b in full_run.creates if plural == "builderpublishes"]
-    assert [c["spec"]["target"]["repo"] for c in claims] == ["snowplow", "busy-agent"]
+    assert [c["spec"]["target"]["repo"] for c in claims] == ["observability", "busy-agent"]
 
 
 def test_a_prompt_proposal_goes_to_the_repo_the_agent_declares(full_run):
@@ -588,3 +735,58 @@ def test_every_stats_key_evidence_assigns_by_subscript_is_declared():
     src = (ROOT / "evidence.py").read_text()
     written = set(re.findall(r'stats\["(\w+)"\]\s*(?:=|\+=)', src))
     assert written and written <= declared, written - declared
+
+
+def test_a_retargeted_proposal_is_named_by_its_new_target(full_run):
+    """The model aimed the Alert at krateo-platformops/snowplow; config.targets sent it to observability.
+    The fingerprint must be recomputed over the target it HAS, or tomorrow's identical proposal would
+    neither dedup against it nor find it by name (#34 retargeted without recomputing)."""
+    created = [b for plural, b in full_run.creates if plural == "proposals"]
+    for body in created:
+        assert body["spec"]["fingerprint"] == P.fingerprint(body["spec"]), body["spec"]["kind"]
+        assert body["metadata"]["name"] == publish.proposal_name(body["spec"])
+    (alert,) = [b for b in created if b["spec"]["kind"] == "Alert"]
+    assert alert["spec"]["target"] == {"repo": "krateo-platformops/observability",
+                                       "path": "charts/krateo-observability/templates/x.yaml"}
+    final = [b["status"] for plural, _, b in full_run.status_writes if plural == "reviewruns"][-1]
+    (notes,) = [c for c in final["conditions"] if c["type"] == "ValidationNotes"]
+    assert "Alert proposal retargeted krateo-platformops/snowplow/x.yaml -> krateo-platformops/observability/" \
+           "charts/krateo-observability/templates/x.yaml (config.targets.Alert)" in notes["message"]
+
+
+def test_the_run_states_its_coverage_in_the_summary_and_to_the_model(full_run):
+    """The fake run cuts every source (MAX_CHARS 10) and one of busy's two conversations: the summary
+    must open with the service's sentence, and the main model must have been told the same thing."""
+    final = [b["status"] for plural, _, b in full_run.status_writes if plural == "reviewruns"][-1]
+    cov = final["coverage"]
+    assert cov["complete"] is False
+    assert (cov["conversationsRead"], cov["conversationsTotal"]) == (1, 2)
+    assert 0 < cov["charsRead"] < cov["charsTotal"] and cov["charsTotalIsLowerBound"] is True
+    assert {c["source"] for c in cov["sourcesCut"]} >= {"clickhouse", "kagent-sessions"}
+    assert final["summary"].startswith(cov["sentence"] + " one real finding")
+    assert "Based on 1 of 2 agent conversations" in cov["sentence"]
+    (main_msg,) = [m for ctx, m in full_run.asked if not ctx]
+    assert cov["sentence"] in main_msg.split("DATA REGION")[0], "the sentence must be outside the data region"
+    assert "busy: 1 conversation(s) of 2 in the window analysed" in main_msg
+
+
+FAKE_TOKEN = "tok-nightly-FAKE-0c9d2b7e"   # deliberately NOT secret-shaped: redact() must not be what hides it
+
+
+def test_the_check_token_reaches_nothing_but_the_check(monkeypatch, capsys):
+    """THE TOKEN'S WHOLE REACH. A full main.main() with TARGET_CHECK_TOKEN set: the token must be on the
+    existence check's HEAD — or this proves nothing — and in NOTHING else: not a ReviewRun status, not a
+    Proposal, not a BuilderPublish, not a message to any model, not a log line. The fake token is not
+    shaped like any credential redact() knows, so a leak cannot be hidden by the redaction pass."""
+    monkeypatch.setenv(targets.TOKEN_ENV, FAKE_TOKEN)
+    api = _drive(monkeypatch)
+    assert api.heads and all(h.get("Authorization") == f"Bearer {FAKE_TOKEN}" for _, h in api.heads)
+    written = json.dumps({"creates": api.creates, "status": api.status_writes, "patches": api.spec_patches,
+                          "stored": api.proposals}, default=str)
+    asked = json.dumps(api.asked)
+    logs = capsys.readouterr()
+    assert FAKE_TOKEN not in written
+    assert FAKE_TOKEN not in asked
+    assert FAKE_TOKEN not in logs.out + logs.err
+    # Mutation guard on the guard: the serialisations above did capture the run.
+    assert "krateo-platformops/observability" in written and "agent-analysis" in asked

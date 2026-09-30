@@ -239,8 +239,11 @@ spec:
                   description: >-
                     TargetResolved is written on every proposal the service records: True/RepoFound,
                     False/NotFoundOrPrivate (GitHub answered 404 to an ANONYMOUS request — the repository is
-                    missing or private, and the check cannot tell which), False/InvalidRepo (not an
-                    owner/name), or Unknown/CheckFailed|CheckDisabled (the question was not answered).
+                    missing or private, and the check cannot tell which), False/RepoNotFound (404 to a
+                    request carrying config.targetCheck's credential — missing, for every organisation that
+                    credential can read), False/InvalidRepo (not an
+                    owner/name), or Unknown/CheckFailed|CheckDisabled (the question was not answered — including a
+                    credential the API rejected, which says nothing about the repository).
                     False is a normal state, not a rejection: the finding stands and wants re-aiming.
                   items:
                     type: object

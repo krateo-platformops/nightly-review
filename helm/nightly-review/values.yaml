@@ -143,17 +143,33 @@ config:
   # stayed unbounded: it never went quiet, so it never timed out.
   a2aTimeoutSeconds: 900
   a2aReadTimeoutSeconds: 180
-  # Whether a proposal's target.repo exists is asked here, ANONYMOUSLY — this service holds no git
-  # credential and is not given one for this. A private repository answers 404 like a missing one; the
-  # TargetResolved condition says so. Empty disables the check (TargetResolved=Unknown/CheckDisabled).
+  # Whether a proposal's target.repo exists is asked here. Empty disables the check
+  # (TargetResolved=Unknown/CheckDisabled).
   targetCheckApiUrl: https://api.github.com
+  targetCheck:
+    # A key of an EXISTING Secret, sent as `Authorization: Bearer` on the existence check only, so a
+    # private repository the credential can see reads RepoFound instead of NotFoundOrPrivate (every
+    # krateo-agentiko prompt repository is private). The KUBELET injects it as an env var through
+    # secretKeyRef, optional — this chart grants the ServiceAccount no Secret read for it, and a missing
+    # Secret or key just means the anonymous check. Empty name disables it. A rejected credential (401)
+    # records Unknown/CheckFailed, never "not found". On 057, gh-token/token is the platform's GitHub PAT.
+    tokenSecret: { name: gh-token, key: token }
+  # WHERE A KIND LANDS, when that is configuration rather than the model's choice: kind -> {repo,
+  # pathPrefix}. The service REPLACES target.repo, and the directory of target.path, for these kinds
+  # before fingerprinting, and notes each move in the run's ValidationNotes; the model keeps choosing the
+  # file name. Only Alert is set: the platform's Alert CRs live in the krateo-observability chart
+  # (templates/default-alerts.yaml renders the default set from that chart's values.yaml), and a proposed
+  # Alert is a new file beside it. Helm merges maps: add a kind by setting it, drop Alert with `Alert: null`.
+  targets:
+    Alert: { repo: krateo-platformops/observability, pathPrefix: charts/krateo-observability/templates }
 
 # Credentials are referenced, never inlined.
 secrets:
-  # NO GITHUB TOKEN. Publishing goes through the platform's own chain (Repository -> Repo ->
+  # NO GITHUB TOKEN FOR PUBLISHING. Publishing goes through the platform's own chain (Repository -> Repo ->
   # LocalResource -> PullRequest), so the credential that reaches a repository is git-provider's,
   # configured once at install level and shared with portal-builder and blueprint-builder. This service
-  # only asks, by creating a BuilderPublish claim.
+  # only asks, by creating a BuilderPublish claim. (config.targetCheck.tokenSecret is read-only use of an
+  # existing token for one HEAD per repository; it never writes.)
   clickhouse: { name: "", userKey: username, passwordKey: password }
 
   # kagent's Postgres, read across every user: session METADATA, and the text of user-authored messages
