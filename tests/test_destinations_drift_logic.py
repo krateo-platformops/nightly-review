@@ -79,3 +79,16 @@ def test_the_repo_files_parse_and_every_reason_is_written():
     components, unmapped = D.load_local()
     assert components and unmapped
     assert all(isinstance(r, str) and r.strip() for r in unmapped.values())
+
+
+def test_the_not_pinned_record_has_reasons_and_contradicts_no_entry():
+    assert D.not_pinned_problems() == []
+
+
+def test_a_not_pinned_glob_matching_a_mapped_key_is_a_contradiction(monkeypatch, tmp_path):
+    f = tmp_path / "u.yaml"
+    f.write_text("unmapped: {}\nnotPinned:\n  '*-agent': covers too much\n  bare: ''\n")
+    monkeypatch.setattr(D, "ALLOWLIST", f)
+    found = D.not_pinned_problems()
+    assert any("installer-agent has a destination but matches notPinned" in m for m in found)
+    assert any("bare is in drift/unmapped-components.yaml notPinned without a reason" in m for m in found)

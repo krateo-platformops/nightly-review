@@ -26,3 +26,19 @@ unmapped:
   external-dns: >-
     Upstream external-dns (registry.k8s.io image), wrapper chart published to
     oci://ghcr.io/krateo-blueprints/charts with no source repository found.
+
+# NOT INSTALLER COMPONENTS, deliberately unmapped too. The drift check cannot see these (the pins do not
+# name them), so they are recorded here to keep every unmapped decision in one reviewed place; a finding
+# about one of them records NoDestination. Only the reason is checked. Keys may be globs.
+notPinned:
+  tk-swarm-ro: >-
+    A hand-applied benchmark probe Agent (no labels, no chart, no repository); not product.
+  "*-bench": >-
+    Benchmark profiles of product agents (autopilot-bench, incident-agent-bench, k8s-agent-bench,
+    helm-agent-bench). Product content is not derived from benchmark traffic, and the analysis excludes
+    them by default.
+  "github-provider-kog-*-controller": >-
+    The 26 per-kind Deployments of the github-provider-kog blueprint. The runtime is oasgen-provider's
+    rest-dynamic-controller, the configuration krateo-blueprints/github-provider-kog: which repository a
+    finding belongs to is a judgement, not a lookup. The composition itself (github-provider-kog) is mapped,
+    and Alerts about any of them land in observability through config.targets.
