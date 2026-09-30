@@ -15,3 +15,8 @@ def test_every_pinned_component_has_a_destination_or_a_reviewed_reason_and_the_r
     found = D.problems(pins, default_repo, components, unmapped)
     assert not found, ("config.destinations.components has drifted from krateo-platformops/installer "
                        "chart/files/component-pins.yaml:\n  - " + "\n  - ".join(found))
+
+
+def test_every_not_pinned_exception_has_a_reason_and_no_destination():
+    found = D.not_pinned_problems()
+    assert not found, "drift/unmapped-components.yaml notPinned:\n  - " + "\n  - ".join(found)
