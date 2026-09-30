@@ -95,6 +95,23 @@ def load_local():
     return components, unmapped
 
 
+def not_pinned_problems():
+    """`notPinned` records unmapped components the pins do not name (a probe, benchmark agents, per-kind
+    controllers). Nothing to compare them with, so only the reason is required — and a glob that also
+    matches a mapped key is a contradiction."""
+    import fnmatch
+    components, _ = load_local()
+    extra = (yaml.safe_load(ALLOWLIST.read_text()) or {}).get("notPinned") or {}
+    out = []
+    for pattern, reason in extra.items():
+        if not (isinstance(reason, str) and reason.strip()):
+            out.append(f"{pattern} is in drift/unmapped-components.yaml notPinned without a reason")
+        for key in components:
+            if fnmatch.fnmatch(key, pattern):
+                out.append(f"{key} has a destination but matches notPinned {pattern!r}: remove one")
+    return out
+
+
 def load_installer():
     pins = (yaml.safe_load(fetch(PINS_URL)) or {}).get("components") or []
     default_repo = (yaml.safe_load(fetch(INSTALLER_VALUES_URL)) or {}).get("ociRepo")
