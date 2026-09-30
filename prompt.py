@@ -132,8 +132,8 @@ judgement about the conversations, so weigh it like any other evidence. Use it f
     the change in change.content against the prompt source it names (a ConfigMap key is a file in the
     agent's chart). target.repo: the prompt repository the analysis names as declared, when it names
     one; otherwise the repository you believe holds that agent's chart — agent prompts live in PRIVATE
-    krateo-agentiko repositories, so an unverifiable target is expected and is not a reason to withhold
-    the proposal. Backed by one conversation, it is at most a low-confidence Prompt proposal.
+    krateo-agentiko repositories, so a target the existence check cannot see is expected and is not a
+    reason to withhold the proposal. Backed by one conversation, it is at most a low-confidence Prompt proposal.
   - A FAILURE PATTERN where people were not served and no prompt change would fix it. Repeated across
     conversations, it is a Documentation proposal (the answer people could not get, written down), or a
     Policy proposal when it is about ROUTING — a request reaching the wrong agent, or a delegation the
@@ -270,12 +270,37 @@ def _fence_id(window):
     return hashlib.sha256(f"{window['from']}|{window['to']}".encode()).hexdigest()[:12]
 
 
-def build_user_message(window, evidence_blocks):
-    """The single user turn: what was examined, then the fenced corpus."""
+def _destinations_note(destinations):
+    """The kinds whose destination is configuration, in words. The model aimed all three Alert proposals
+    of rr-20260930-0200 at `krateo-observability`, a repository that does not exist under any owner; the
+    service now overrides target.repo for these kinds (targets.aim), and saying so up front stops the
+    model spending the night guessing — and stops a reviewer reading a guess it was never allowed to make."""
+    lines = [f"  {kind:<13} -> {d['repo']}" + (f", file under {d['pathPrefix'].strip('/')}/" if d.get("pathPrefix") else "")
+             for kind, d in sorted((destinations or {}).items()) if isinstance(d, dict) and d.get("repo")]
+    if not lines:
+        return ""
+    return ("FIXED DESTINATIONS. For these kinds the repository (and directory) is set by this platform's "
+            "configuration, not chosen by you: whatever target.repo you give is replaced, and only the file "
+            "NAME of target.path is kept. Name the file after the finding (e.g. the Alert's metadata.name).\n"
+            + "\n".join(lines) + "\n")
+
+
+def build_user_message(window, evidence_blocks, coverage=None, destinations=None):
+    """The single user turn: what was examined, how much of it, where fixed kinds land, then the fenced
+    corpus.
+
+    `coverage` is the service's sentence from coverage.compute — outside the data region, because it is
+    the harness speaking about the corpus, not the corpus. It is there so proposals do not claim more
+    than was read: a pattern "in 3 conversations" out of 21 read is not a pattern out of 65."""
     header = (
         f"Review window: {window['from']} .. {window['to']} (UTC)\n"
         f"Sources that answered: {', '.join(sorted(evidence_blocks)) or 'none'}\n"
     )
+    if coverage:
+        header += (f"{coverage} This was counted by the service. Where the evidence was cut, say so in your "
+                   f"summary and in each affected proposal's rationale, and do not describe a count as covering "
+                   f"conversations or rows you were not shown.\n")
+    header += _destinations_note(destinations)
     fid = _fence_id(window)
     # Belt as well as braces: neutralise any literal closing tag in a body, so even a corpus that learns
     # the nonce cannot close the region. The replacement is visible in the prompt, which is deliberate —

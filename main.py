@@ -15,6 +15,7 @@ from kubernetes import client, config
 
 import analysis
 import autopilot
+import coverage
 import evidence
 import prompt
 import proposals as P
@@ -150,7 +151,7 @@ def main():
     st["evidence"]["agent-analysis"] = astats
     calls += acalls
     if assessments:
-        blocks["agent-analysis"] = analysis.render_for_review(assessments)
+        blocks["agent-analysis"] = analysis.render_for_review(assessments, astats)
         st["agentAnalysis"] = {"assessments": analysis.stored(assessments)}
         # Not paid for twice: the questions of every agent the analysis read are folded to a pointer.
         if "kagent-sessions" in blocks:
@@ -184,6 +185,14 @@ def main():
     if unexplained_empty:
         print(f"[run] empty but explained, not counted as degraded: {unexplained_empty}", flush=True)
 
+    # WHAT THE REVIEW IS ABOUT TO SEE, counted before it sees it — so the main model is told, and so a
+    # run that fails at the ask still records it. When anything was cut the sentence is the summary until
+    # the model's own is appended to it; see coverage.py.
+    cov = coverage.compute(st["evidence"])
+    st["coverage"] = cov
+    if not cov["complete"]:
+        st["summary"] = cov["sentence"]
+
     # `raw` is bound OUTSIDE the try on purpose. When validation refuses a response, the one thing
     # needed to fix it is the response, and until now the run recorded only that it was unusable — a
     # night failed with "no `proposals` array" and left nothing to say WHAT had arrived instead.
@@ -196,7 +205,9 @@ def main():
     try:
         steps.start("ask")
         payload, raw, usage = autopilot.ask(
-            prompt.SYSTEM, prompt.build_user_message(window, blocks), run_name, token)
+            prompt.SYSTEM, prompt.build_user_message(window, blocks, coverage=cov["sentence"],
+                                                     destinations=targets.DESTINATIONS),
+            run_name, token)
         steps.end("ask")
         # THE MODEL FIELD IS WRITTEN ONLY WHEN THE AGENT REPORTED USAGE. It was written unconditionally
         # from a key kagent never sends, so every run on 057 carried zeros that looked like a
@@ -233,15 +244,22 @@ def main():
     # The model's own account of the night, which the response contract has always asked for and the
     # run never kept. Redacted like every other model string before it reaches a CR.
     summary = payload.get("summary") if isinstance(payload, dict) else None
-    if isinstance(summary, str) and summary.strip():
-        st["summary"] = P.redact(summary)[:2000]
+    summary = coverage.summary(cov, P.redact(summary) if isinstance(summary, str) else "")
+    if summary:
+        st["summary"] = summary
 
-    # A Prompt proposal about an agent whose prompt repository is DECLARED on the Agent goes there,
-    # whatever the model chose — before fingerprinting, because the target is part of the fingerprint.
+    # WHERE A PROPOSAL LANDS, WHEN THAT IS NOT THE MODEL'S TO CHOOSE. A kind configured in
+    # config.targets goes to its repository and directory (targets.aim); a Prompt proposal about an agent
+    # whose prompt repository is DECLARED on the Agent goes there (analysis.retarget) — second, because a
+    # declaration about one agent is more specific than a default for a kind. Both before classification
+    # and publishing, and the FINGERPRINT IS RECOMPUTED after a move: validate_batch computed it over the
+    # model's target, and a proposal named by a target it no longer has would never dedup against itself
+    # tomorrow (#34 retargeted without recomputing).
     for prop in kept:
-        moved = analysis.retarget(prop, assessments)
+        moved = [m for m in (targets.aim(prop), analysis.retarget(prop, assessments)) if m]
         if moved:
-            notes.append(moved)
+            notes.extend(moved)
+            prop["fingerprint"] = P.fingerprint(prop)
 
     # Decided per proposal, BEFORE anything is written: which are duplicates, which replace an open
     # one, and whether the repository each names exists. The existence check lives in validate because

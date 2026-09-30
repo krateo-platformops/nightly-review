@@ -175,6 +175,12 @@ spec:
                           by one pointer line per agent. The truncation fields beside it describe what was
                           actually sent after that fold. Agents the analysis did not cover keep their
                           questions here.
+                      corpusDroppedChars:
+                        type: integer
+                        description: >-
+                          agent-analysis only. Characters of the ASSESSMENTS cut before the main review,
+                          by the per-agent share or config.agentAnalysis.corpusMaxChars — distinct from
+                          droppedChars, which is what the per-agent calls themselves did not see.
                       droppedAgents:
                         type: integer
                         description: >-
@@ -210,6 +216,7 @@ spec:
                             delegatedSessions: { type: integer, description: "Of those, opened by another agent over A2A." }
                             conversations:     { type: integer, description: "Conversations actually shown to the model." }
                             messages:          { type: integer, description: "Stored events shown to the model." }
+                            chars:             { type: integer, description: "Characters of conversation shown to the model, in the same units as droppedChars." }
                             droppedChars:      { type: integer, description: "Characters cut by the per-message, per-tool-result and per-agent caps, and events too large to fetch." }
                             droppedMessages:   { type: integer, description: "Events in the window the model did not see, whatever cut them." }
                             droppedSessions:   { type: integer }
@@ -294,7 +301,49 @@ spec:
                   description: >-
                     The model's own account of the night, from the response contract's `summary` —
                     asked for since the first release and discarded until 0.1.21. Redacted like every
-                    other model string. The model's words, not a verified finding.
+                    other model string. The model's words, not a verified finding — EXCEPT its first
+                    sentence when anything was cut: that is status.coverage.sentence, written by the
+                    service, so a summary of a partial reading says it is one.
+                coverage:
+                  type: object
+                  description: >-
+                    HOW MUCH OF THE NIGHT THE REVIEW SAW, counted by the service from the sources' own
+                    stats — never by the model, which cannot know what it was not shown. Written before
+                    the main ask, so a run that fails there still has it. Conversations are the
+                    agent-analysis stage's: read counts only agents whose call returned an assessment;
+                    total counts every conversation of the agents chosen or skipped for the agent cap
+                    (excluded and retired agents are out of scope, not missed). Characters are in the
+                    stage's rendered units, and charsTotal is a lower bound whenever something was
+                    dropped without being fetched. rr-20260930-0200 read 21 of 65 conversations and its
+                    summary did not say so; this is why.
+                  properties:
+                    complete:          { type: boolean, description: "Nothing was cut, skipped or truncated." }
+                    sentence:          { type: string, maxLength: 600, description: "The coverage in words; the first sentence of status.summary whenever complete is false, and part of the main model's corpus note always." }
+                    conversationsRead:  { type: integer }
+                    conversationsTotal: { type: integer }
+                    charsRead:          { type: integer }
+                    charsTotal:         { type: integer }
+                    charsTotalIsLowerBound: { type: boolean }
+                    agentsSkipped:
+                      type: array
+                      maxItems: 30
+                      items:
+                        type: object
+                        properties:
+                          agent:  { type: string }
+                          reason: { type: string, enum: [over maxAgents, analysis failed, nothing readable] }
+                    sourcesCut:
+                      type: array
+                      maxItems: 10
+                      items:
+                        type: object
+                        properties:
+                          source:       { type: string }
+                          droppedChars: { type: integer }
+                    sourcesFailed:
+                      type: array
+                      description: Sources that did not answer at all (ok false).
+                      items: { type: string }
                 steps:
                   type: array
                   description: >-

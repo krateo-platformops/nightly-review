@@ -733,6 +733,9 @@ def analyse(api, core, window, run_name, token=None, ask=None):
                # head/tail message cap, the character budget, or an event too large to fetch.
                "droppedChars": cut.get("droppedChars", 0), "droppedMessages": max(0, events - cut.get("messages", 0)),
                "droppedSessions": cut.get("droppedSessions", 0) + max(0, sessions - MAX_SESSIONS)}
+        # WHAT WAS SHOWN, in the same units as droppedChars, so status.coverage can say "X of Y
+        # characters" from the service's own measurement rather than the model's impression.
+        rec["chars"] = sum(len(line) + 1 for c in conversations for line in c["lines"])
         records.append(rec)
         if not conversations:
             rec["error"] = "no readable conversation in the window"
@@ -777,7 +780,7 @@ def analyse(api, core, window, run_name, token=None, ask=None):
         stats["returned"] += 1
         rec |= {"patterns": len(assessment["failurePatterns"]), "promptFindings": len(assessment["promptFindings"]),
                 "unverifiedExamples": unverified}
-        assessments.append({"agent": ns_name, "conversations": len(conversations),
+        assessments.append({"agent": ns_name, "conversations": len(conversations), "sessions": sessions,
                             "promptSource": rec["promptSource"],
                             **({"promptRepo": repo, "promptRepoFrom": where} if repo else {}),
                             "measured": measured, **assessment})
@@ -808,15 +811,22 @@ def analyse(api, core, window, run_name, token=None, ask=None):
 # ---------------------------------------------------------------------------------------------------
 # 5. WHAT THE MAIN REVIEW SEES
 # ---------------------------------------------------------------------------------------------------
-def render_for_review(assessments):
+def render_for_review(assessments, stats=None):
     """The assessments as one compact evidence block for the main corpus — NEVER a transcript. Each
     agent's part is bounded, and the block as a whole is bounded by CORPUS_MAX_CHARS, cut on an agent
-    boundary with a marker the model can see."""
+    boundary with a marker the model can see. What those cuts dropped is added to
+    stats["corpusDroppedChars"], so a cut here is on the record and in status.coverage, not only in a
+    marker the model reads."""
+    cut = 0
     per_agent = max(1200, CORPUS_MAX_CHARS // max(1, len(assessments)))
     parts = []
     for a in assessments:
         m = a.get("measured") or {}
-        lines = [f"- AGENT {a['agent']}: {a['conversations']} conversation(s) analysed in full; measured: "
+        # "OF N": the analysis read the most recent maxSessionsPerAgent conversations, within a character
+        # budget. Saying only "analysed in full" let the review read 10 of autopilot's 45 conversations as
+        # all of them (rr-20260930-0200).
+        of = f" of {a['sessions']} in the window" if a.get("sessions", 0) > a["conversations"] else ""
+        lines = [f"- AGENT {a['agent']}: {a['conversations']} conversation(s){of} analysed in full; measured: "
                  f"{m.get('withToolErrors', 0)} with tool errors, {m.get('unansweredAtWindowEnd', 0)} unanswered "
                  f"at window end, {m.get('withARepeatedCall3x', 0)} with a call repeated 3x+, "
                  f"{m.get('delegatedByAnotherAgent', 0)} delegated by another agent",
@@ -841,11 +851,15 @@ def render_for_review(assessments):
             lines.append(f"  RECURRING NEED in {rn['count']} conversation(s): {rn['need']}")
         text = "\n".join(lines)
         if len(text) > per_agent:
+            cut += len(text) - per_agent
             text = text[:per_agent] + " …[this agent's assessment cut]"
         parts.append(text)
     body = "\n".join(parts)
     if len(body) > CORPUS_MAX_CHARS:
+        cut += len(body) - CORPUS_MAX_CHARS
         body = body[:CORPUS_MAX_CHARS] + f"\n... [agent-analysis cut at {CORPUS_MAX_CHARS} chars]"
+    if cut and stats is not None:
+        stats["corpusDroppedChars"] = stats.get("corpusDroppedChars", 0) + cut
     head = ("- AGENT ANALYSIS: each agent's conversations in this window were read IN FULL (questions, "
             "replies, tool calls and results, redacted) by a separate model call against the agent's current "
             "prompt. Counts are the service's (distinct cited conversations that exist); excerpts were "

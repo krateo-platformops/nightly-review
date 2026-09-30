@@ -503,8 +503,38 @@ def test_the_review_gets_the_assessment_never_the_transcript():
 def test_the_review_block_is_bounded(monkeypatch):
     monkeypatch.setattr(AN, "CORPUS_MAX_CHARS", 1500)
     many = [_full_assessment(f"krateo-system/agent-{i}", summary="w" * 600) for i in range(10)]
-    body = AN.render_for_review(many)
+    stats = {}
+    body = AN.render_for_review(many, stats)
     assert len(body) < 1500 + 600 and "agent-analysis cut at 1500" in body
+    # The cut is on the record (status.coverage.sourcesCut), not only in a marker the model reads.
+    assert stats["corpusDroppedChars"] > 0
+
+
+def test_the_recorded_cut_is_exactly_what_the_block_lost(monkeypatch):
+    """Each agent's part under its share, the block as a whole over the cap: only the block-level cut
+    fires, and it must be counted to the character."""
+    few = [_full_assessment(f"krateo-system/agent-{i}") for i in range(4)]
+    head_len = len(AN.render_for_review([]))                     # the header line and its newline
+    full = AN.render_for_review(few)
+    assert all(len(part) < 1200 for part in full[head_len:].split("\n- AGENT")), "a per-agent cut would fire"
+    monkeypatch.setattr(AN, "CORPUS_MAX_CHARS", 1500)
+    stats = {}
+    AN.render_for_review(few, stats)
+    assert stats["corpusDroppedChars"] == len(full) - head_len - 1500
+
+
+def test_an_uncut_review_block_records_no_cut():
+    stats = {}
+    AN.render_for_review([_full_assessment()], stats)
+    assert "corpusDroppedChars" not in stats
+
+
+def test_the_review_is_told_how_many_of_an_agents_conversations_were_read():
+    """rr-20260930-0200: autopilot had 45 conversations and 10 were read; "analysed in full" alone read as
+    all of them."""
+    body = AN.render_for_review([_full_assessment(sessions=45, conversations=10)])
+    assert "10 conversation(s) of 45 in the window analysed" in body
+    assert " of " not in AN.render_for_review([_full_assessment(sessions=2)]).split("\n")[1].split(";")[0]
 
 
 def test_questions_the_analysis_covered_are_folded_and_the_rest_kept(monkeypatch):

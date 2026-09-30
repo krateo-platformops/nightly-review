@@ -226,6 +226,8 @@ def test_a_run_mirrors_first_and_leaves_a_rejected_repeat_alone(monkeypatch):
         monkeypatch.setattr(M.evidence, src, lambda *a, **k: ok)
     monkeypatch.setattr(M.autopilot, "service_jwt", lambda: None)
     monkeypatch.setattr(M.autopilot, "ask", lambda *a, **k: ({"summary": "s", "proposals": [prop]}, "{}", {}))
+    # The rejected fingerprint is over the model's target; no config.targets move in this test.
+    monkeypatch.setattr(M.targets, "DESTINATIONS", {})
     monkeypatch.setattr(M.targets, "resolve", lambda *a, **k: {"type": "TargetResolved", "status": "True",
                                                                 "reason": "RepoFound"})
 
