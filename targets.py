@@ -69,11 +69,11 @@ TYPE = "TargetResolved"
 # import, so nothing keeps a copy in a module global that a later refactor could print.
 TOKEN_ENV = "TARGET_CHECK_TOKEN"
 
-# kind -> {repo, pathPrefix}: config.targets, as JSON. The default is the chart's default, so a run
-# without the env behaves like an install with it. A kind absent here stays the model's choice.
-DESTINATIONS = json.loads(os.environ.get("TARGET_DESTINATIONS") or
-                          '{"Alert": {"repo": "krateo-platformops/observability", '
-                          '"pathPrefix": "charts/krateo-observability/templates"}}')
+# kind -> {repo, pathPrefix}: config.targets, as JSON. ABSENT MEANS NO RETARGET: the destination lives
+# in the chart's values.yaml and nowhere else — not here, and not as a values.schema.json default, which
+# core-provider would write into the live composition spec as a value nobody typed. A kind absent here
+# stays the model's choice.
+DESTINATIONS = json.loads(os.environ.get("TARGET_DESTINATIONS") or "{}")
 
 
 def _cond(status, reason, message):

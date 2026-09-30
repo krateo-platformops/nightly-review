@@ -111,7 +111,7 @@ TroubleshootingReport. The portal sends a merge-patch with the user's own token:
   because a person's pull request hangs off them. Proposals with no subject (everything written before
   the field existed) **never** match each other.
 - **`TargetResolved`** records whether `target.repo` exists, with one `HEAD` per repository per run.
-  With `config.targetCheck.tokenSecret` (default `gh-token`/`token`) the check is authenticated: the
+  With `config.targetCheck.tokenSecret` (values.yaml: `gh-token`/`token`; no schema default) the check is authenticated: the
   kubelet injects that one Secret key as an env var (`secretKeyRef`, `optional: true`), so the
   ServiceAccount still has no Secret read, and the token is used only as the check's `Authorization`
   header — never logged, never in a prompt or a status (a test drives a whole run with a fake token to
@@ -119,7 +119,7 @@ TroubleshootingReport. The portal sends a merge-patch with the user's own token:
   `False/RepoNotFound`; a rejected token (401) is `Unknown/CheckFailed`, never "not found". Without a
   token, `False/NotFoundOrPrivate` (missing, or private — an anonymous check cannot tell). False is a
   normal state, not a rejection: the finding stands and wants re-aiming.
-- **Fixed destinations.** For a kind in `config.targets` (default: `Alert` ->
+- **Fixed destinations.** For a kind in `config.targets` (values.yaml: `Alert` ->
   `krateo-platformops/observability`, under `charts/krateo-observability/templates`) the service
   replaces `target.repo` and the path's directory before fingerprinting, notes the move in
   `ValidationNotes`, and tells the model up front; the model keeps choosing the file name.

@@ -72,12 +72,14 @@ spec:
                        component whose corpus goes to a model still cannot read any Secret itself. It
                        gets this one value and no other. `optional: true` so an install without the
                        Secret (or the key) starts and checks anonymously, rather than failing to start. */}}
-                {{- with .Values.config.targetCheck.tokenSecret }}
-                {{- if .name }}
+                {{- /* dig, not a dotted path: an install whose values lack config.targetCheck (no schema
+                       default fills it — see values.schema.json) must render the anonymous check, not a
+                       nil-pointer error. */}}
+                {{- $tokenSecret := dig "targetCheck" "tokenSecret" dict .Values.config }}
+                {{- if $tokenSecret.name }}
                 - name: TARGET_CHECK_TOKEN
                   valueFrom:
-                    secretKeyRef: { name: {{ .name }}, key: {{ .key | default "token" }}, optional: true }
-                {{- end }}
+                    secretKeyRef: { name: {{ $tokenSecret.name }}, key: {{ $tokenSecret.key | default "token" }}, optional: true }
                 {{- end }}
                 - name: TARGET_DESTINATIONS
                   value: {{ .Values.config.targets | default dict | toJson | quote }}

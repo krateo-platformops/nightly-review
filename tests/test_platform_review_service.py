@@ -388,10 +388,49 @@ def test_an_alert_goes_where_the_chart_says_whatever_the_model_chose():
     assert "config.targets.Alert" in note
 
 
-def test_the_chart_default_is_the_observability_repo():
-    assert targets.DESTINATIONS == OBS
+def test_the_destination_is_the_charts_values_and_absent_means_no_retarget():
+    """The value lives in values.yaml ONLY. With no env (a key absent from the values), nothing moves."""
     values = yaml.safe_load((ROOT / "helm/nightly-review/values.yaml").read_text())
     assert values["config"]["targets"] == OBS
+    assert values["config"]["targetCheck"]["tokenSecret"] == {"name": "gh-token", "key": "token"}
+    assert targets.DESTINATIONS == {}, "the code must not carry its own default destination"
+    p = _prop(repo="krateo-observability", path="alerts/a.yaml")
+    assert targets.aim(p) is None and p["target"]["repo"] == "krateo-observability"
+
+
+# Keys this change added to values.schema.json. core-provider applies schema defaults straight into the
+# live composition CR spec, so a `default` there is a silent live override, not documentation — the
+# installer's check-fill-defaults.py exists because one (frontend agentgateway.enabled) broke Autopilot
+# for every user. Its rule, mirrored: no `default` at ANY depth under these keys.
+NEW_SCHEMA_KEYS = ("targets", "targetCheck")
+
+
+def _defaults(node, path):
+    out = []
+    if isinstance(node, dict):
+        if "default" in node:
+            out.append(path)
+        for k, v in node.items():
+            out += _defaults(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            out += _defaults(v, f"{path}[{i}]")
+    return out
+
+
+def test_no_new_schema_key_carries_a_default():
+    import json as _json
+    cfg = _json.loads((ROOT / "helm/nightly-review/values.schema.json").read_text())["properties"]["config"]["properties"]
+    for key in NEW_SCHEMA_KEYS:
+        assert key in cfg, f"config.{key} is not declared, so this test proves nothing"
+        assert _defaults(cfg[key], f"config.{key}") == []
+
+
+def test_the_chart_renders_the_anonymous_check_when_the_key_is_absent():
+    """No schema default fills config.targetCheck, so the template must survive its absence."""
+    cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
+    assert 'dig "targetCheck" "tokenSecret" dict .Values.config' in cron
+    assert ".Values.config.targetCheck." not in cron
 
 
 @pytest.mark.parametrize("path,want", [
@@ -597,6 +636,8 @@ def _drive(monkeypatch):
             "promptTokenCount": 9, "candidatesTokenCount": 3, "totalTokenCount": 12}}})
     monkeypatch.setattr(M.autopilot, "ask", ask)
     monkeypatch.setattr(M.publish, "publish_version", lambda: "v1-8-53")
+    # The chart's values.yaml destinations, as the CronJob would pass them.
+    monkeypatch.setattr(targets, "DESTINATIONS", OBS)
     heads = []
     def head(url, **k):
         heads.append((url, dict(k.get("headers") or {})))

@@ -116,7 +116,7 @@
           "type": "object",
           "additionalProperties": false,
           "title": "Authenticated existence check",
-          "description": "A key of an EXISTING Secret, injected into the review pod as TARGET_CHECK_TOKEN by the kubelet (valueFrom.secretKeyRef, optional: true) and sent as `Authorization: Bearer` on the existence check's HEAD only. Needs no RBAC: the ServiceAccount still holds no Secret read. With it, a private repository the credential can see reads RepoFound, and a 404 reads RepoNotFound; a rejected credential (401) reads Unknown/CheckFailed. Never logged, never in a prompt or a status. An empty name disables it (anonymous check).",
+          "description": "A key of an EXISTING Secret, injected into the review pod as TARGET_CHECK_TOKEN by the kubelet (valueFrom.secretKeyRef, optional: true) and sent as `Authorization: Bearer` on the existence check's HEAD only. Needs no RBAC: the ServiceAccount still holds no Secret read. With it, a private repository the credential can see reads RepoFound, and a 404 reads RepoNotFound; a rejected credential (401) reads Unknown/CheckFailed. Never logged, never in a prompt or a status. An empty name disables it (anonymous check). NO SCHEMA DEFAULT, deliberately (core-provider would write it into the live composition spec); the chart's values.yaml sets {name: gh-token, key: token}. Absent means the anonymous check.",
           "properties": {
             "tokenSecret": {
               "type": "object",
@@ -128,26 +128,16 @@
                 },
                 "key": {
                   "type": "string",
-                  "default": "token"
+                  "description": "Key in that Secret; the template uses `token` when empty."
                 }
-              },
-              "default": {
-                "name": "gh-token",
-                "key": "token"
               }
-            }
-          },
-          "default": {
-            "tokenSecret": {
-              "name": "gh-token",
-              "key": "token"
             }
           }
         },
         "targets": {
           "type": "object",
           "title": "Fixed destinations per proposal kind",
-          "description": "kind (Alert, Widget, Prompt, Policy or Documentation; any other key is ignored) -> {repo, pathPrefix}. For a kind listed here the service REPLACES the model's target.repo, and the directory of target.path, before fingerprinting, and records each move in the run's ValidationNotes; the model keeps choosing the file name. The prompt tells the model these destinations are fixed. Only Alert is set by default: krateo-platformops/observability, beside charts/krateo-observability/templates/default-alerts.yaml. Helm merges maps: set a kind to add it, set Alert to null to drop it.",
+          "description": "kind (Alert, Widget, Prompt, Policy or Documentation; any other key is ignored) -> {repo, pathPrefix}. For a kind listed here the service REPLACES the model's target.repo, and the directory of target.path, before fingerprinting, and records each move in the run's ValidationNotes; the model keeps choosing the file name. The prompt tells the model these destinations are fixed. NO SCHEMA DEFAULT, deliberately: core-provider applies schema defaults into the live composition spec, so a default here would be a silent override. The chart's values.yaml sets Alert -> krateo-platformops/observability under charts/krateo-observability/templates. Absent, no kind is retargeted. Helm merges maps: set a kind to add it, set Alert to null to drop it.",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
@@ -164,12 +154,6 @@
                 "type": "string",
                 "description": "Directory inside the repository; empty keeps the model's path."
               }
-            }
-          },
-          "default": {
-            "Alert": {
-              "repo": "krateo-platformops/observability",
-              "pathPrefix": "charts/krateo-observability/templates"
             }
           }
         },
