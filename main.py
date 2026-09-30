@@ -206,7 +206,8 @@ def main():
         steps.start("ask")
         payload, raw, usage = autopilot.ask(
             prompt.SYSTEM, prompt.build_user_message(window, blocks, coverage=cov["sentence"],
-                                                     destinations=targets.DESTINATIONS),
+                                                     destinations=targets.DESTINATIONS,
+                                                     components=targets.COMPONENTS),
             run_name, token)
         steps.end("ask")
         # THE MODEL FIELD IS WRITTEN ONLY WHEN THE AGENT REPORTED USAGE. It was written unconditionally
@@ -248,17 +249,16 @@ def main():
     if summary:
         st["summary"] = summary
 
-    # WHERE A PROPOSAL LANDS, WHEN THAT IS NOT THE MODEL'S TO CHOOSE. A kind configured in
-    # config.targets goes to its repository and directory (targets.aim); a Prompt proposal about an agent
-    # whose prompt repository is DECLARED on the Agent goes there (analysis.retarget) — second, because a
-    # declaration about one agent is more specific than a default for a kind. Both before classification
-    # and publishing, and the FINGERPRINT IS RECOMPUTED after a move: validate_batch computed it over the
-    # model's target, and a proposal named by a target it no longer has would never dedup against itself
-    # tomorrow (#34 retargeted without recomputing).
+    # WHERE A PROPOSAL LANDS IS NEVER THE MODEL'S TO CHOOSE. The chart's values say it — config.targets per
+    # kind, then config.destinations.components per subject component (targets.aim has the precedence) —
+    # and a proposal they name no destination for gets none: target.repo is cleared, never left as the
+    # model's guess. Before classification and publishing, and the FINGERPRINT IS RECOMPUTED after a move:
+    # validate_batch computed it over the model's target, and a proposal named by a target it no longer
+    # has would never dedup against itself tomorrow (#34 retargeted without recomputing).
     for prop in kept:
-        moved = [m for m in (targets.aim(prop), analysis.retarget(prop, assessments)) if m]
+        moved = targets.aim(prop)
         if moved:
-            notes.extend(moved)
+            notes.append(moved)
             prop["fingerprint"] = P.fingerprint(prop)
 
     # Decided per proposal, BEFORE anything is written: which are duplicates, which replace an open
@@ -280,7 +280,10 @@ def main():
             # carried the fingerprint", and this one is closed. The step message carries the count.
             answered += 1
             continue
-        target_cond = targets.resolve(prop["target"]["repo"], cache=resolved)
+        # No destination is not a question for GitHub: there is no repository to ask about, and the
+        # condition says which value is missing. False, so the publish loop below gives it no claim.
+        target_cond = (targets.resolve(prop["target"]["repo"], cache=resolved) if prop["target"].get("repo")
+                       else targets.no_destination(prop))
         plan.append((prop, priors if action == "supersede" else [], target_cond))
         # Forgotten as soon as they are claimed, so a second proposal in this run with the same subject
         # does not supersede the same prior again and count it twice.

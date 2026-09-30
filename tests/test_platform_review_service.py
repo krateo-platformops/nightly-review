@@ -388,21 +388,45 @@ def test_an_alert_goes_where_the_chart_says_whatever_the_model_chose():
     assert "config.targets.Alert" in note
 
 
-def test_the_destination_is_the_charts_values_and_absent_means_no_retarget():
-    """The value lives in values.yaml ONLY. With no env (a key absent from the values), nothing moves."""
+def test_the_destination_is_the_charts_values_and_absent_means_no_destination():
+    """The values live in values.yaml ONLY. With no env (keys absent from the values) the code carries no
+    destination of its own, so a proposal is not retargeted to a default — it gets NO repository."""
     values = yaml.safe_load((ROOT / "helm/nightly-review/values.yaml").read_text())
     assert values["config"]["targets"] == OBS
     assert values["config"]["targetCheck"]["tokenSecret"] == {"name": "gh-token", "key": "token"}
+    assert values["config"]["destinations"]["components"]["snowplow"]["repo"] == "krateo-platformops/snowplow"
     assert targets.DESTINATIONS == {}, "the code must not carry its own default destination"
+    assert targets.COMPONENTS == {}, "the code must not carry its own default destination"
     p = _prop(repo="krateo-observability", path="alerts/a.yaml")
-    assert targets.aim(p) is None and p["target"]["repo"] == "krateo-observability"
+    assert "cleared" in targets.aim(p)
+    assert p["target"] == {"repo": "", "path": "a.yaml"}
+
+
+def test_no_destination_is_hardcoded_in_the_code():
+    """Diego: "this destinations must be in values, not hardcoded". No repository of the platform's orgs
+    appears in the service's code outside comments and docstrings."""
+    import ast
+    import io
+    import tokenize
+    for name in ("targets.py", "main.py", "prompt.py", "analysis.py", "publish.py", "proposals.py"):
+        src = (ROOT / name).read_text()
+        doc_lines = set()
+        for node in ast.walk(ast.parse(src)):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                doc_lines.update(range(body[0].lineno, body[0].end_lineno + 1))
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.STRING and tok.start[0] not in doc_lines:
+                assert not any(org + "/" in tok.string for org in
+                               ("krateo-platformops", "krateo-agentiko", "krateo-blueprints")), (name, tok.string[:80])
 
 
 # Keys this change added to values.schema.json. core-provider applies schema defaults straight into the
 # live composition CR spec, so a `default` there is a silent live override, not documentation — the
 # installer's check-fill-defaults.py exists because one (frontend agentgateway.enabled) broke Autopilot
 # for every user. Its rule, mirrored: no `default` at ANY depth under these keys.
-NEW_SCHEMA_KEYS = ("targets", "targetCheck")
+NEW_SCHEMA_KEYS = ("targets", "targetCheck", "destinations")
 
 
 def _defaults(node, path):
@@ -426,6 +450,15 @@ def test_no_new_schema_key_carries_a_default():
         assert _defaults(cfg[key], f"config.{key}") == []
 
 
+def test_the_chart_passes_the_components_map_and_survives_its_absence():
+    """No schema default fills config.destinations, so the template digs for it; the env name is the one
+    targets.py reads."""
+    cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
+    assert "name: TARGET_COMPONENTS" in cron
+    assert 'dig "destinations" "components" dict .Values.config' in cron.split("TARGET_COMPONENTS")[1][:200]
+    assert 'os.environ.get("TARGET_COMPONENTS")' in (ROOT / "targets.py").read_text()
+
+
 def test_the_chart_renders_the_anonymous_check_when_the_key_is_absent():
     """No schema default fills config.targetCheck, so the template must survive its absence."""
     cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
@@ -444,9 +477,150 @@ def test_the_model_keeps_only_a_safe_file_name(path, want):
     assert p["target"]["path"] == f"charts/krateo-observability/templates/{want}"
 
 
-def test_an_unconfigured_kind_is_left_alone():
-    p = _prop(kind="Documentation", repo="org/docs", path="d.md", fmt="markdown")
-    assert targets.aim(p, OBS) is None and p["target"] == {"repo": "org/docs", "path": "d.md"}
+# --- config.destinations: where every other proposal lands is configuration too ----------------------
+
+COMPS = {
+    "snowplow": {"repo": "krateo-platformops/snowplow", "pathPrefix": "docs"},
+    "kagent": {"repo": "krateo-agentiko/kagent", "pathPrefix": "docs"},
+    "installer-agent": {"repo": "krateo-agentiko/installer-agent", "pathPrefix": "docs",
+                        "prompt": {"repo": "krateo-agentiko/installer-agent",
+                                   "path": "helm/installer-agent/files/prompts-eng.yaml"}},
+}
+
+
+def test_a_component_in_the_values_is_retargeted_keeping_the_models_file_name():
+    p = _prop(kind="Documentation", subject="Snowplow/SAR Unauthorized", repo="krateo-platformops/snowplow-docs",
+              path="guides/sar/why.md", fmt="markdown")
+    note = targets.aim(p, OBS, COMPS)
+    assert p["target"] == {"repo": "krateo-platformops/snowplow", "path": "docs/why.md"}
+    assert note == ("Documentation proposal retargeted krateo-platformops/snowplow-docs/guides/sar/why.md -> "
+                    "krateo-platformops/snowplow/docs/why.md (config.destinations.components.snowplow)")
+
+
+def test_a_prompt_proposal_lands_at_the_prompt_path_exactly():
+    """A prompt is ONE file: the model's file name is not kept, prompt.path is."""
+    p = _prop(kind="Prompt", subject="installer-agent/repeated-get-resource-yaml",
+              repo="krateo-agentiko/installer-agent", path="prompts/installer_agent.txt", fmt="diff")
+    note = targets.aim(p, OBS, COMPS)
+    assert p["target"] == {"repo": "krateo-agentiko/installer-agent",
+                           "path": "helm/installer-agent/files/prompts-eng.yaml"}
+    assert "(config.destinations.components.installer-agent.prompt)" in note
+
+
+def test_a_prompt_proposal_about_a_component_without_a_prompt_has_no_destination():
+    """The component's chart repository is not its prompt: no `prompt`, no destination for a Prompt."""
+    p = _prop(kind="Prompt", subject="snowplow/x", repo="krateo-platformops/snowplow", fmt="diff")
+    targets.aim(p, OBS, COMPS)
+    assert p["target"]["repo"] == ""
+    cond = targets.no_destination(p, OBS, COMPS)
+    assert (cond["status"], cond["reason"]) == ("False", "NoDestination")
+    assert "config.destinations.components.snowplow.prompt" in cond["message"]
+
+
+def test_no_destination_clears_the_models_guess_and_says_which_component():
+    """rr-20260930-0200 built krateo-platformops/<component> for components with no repository of that
+    name. Keeping the guess is exactly what this replaces."""
+    p = _prop(kind="Policy", subject="tk-swarm-ro/idle", repo="krateo-platformops/kagent",
+              path="policies/tk-swarm-ro-idle.yaml")
+    note = targets.aim(p, OBS, COMPS)
+    assert p["target"] == {"repo": "", "path": "tk-swarm-ro-idle.yaml"}
+    assert note == ("Policy proposal krateo-platformops/kagent/policies/tk-swarm-ro-idle.yaml cleared: "
+                    "no destination configured for component tk-swarm-ro; add it to config.destinations")
+    assert targets.no_destination(p, OBS, COMPS) == {
+        "type": "TargetResolved", "status": "False", "reason": "NoDestination",
+        "message": "no destination configured for component tk-swarm-ro; add it to config.destinations"}
+
+
+def test_a_subject_that_cannot_be_normalised_has_no_destination():
+    p = _prop(kind="Documentation", subject=None, repo="krateo-platformops/snowplow", fmt="markdown")
+    targets.aim(p, OBS, COMPS)
+    assert p["target"]["repo"] == ""
+    assert "no subject component" in targets.no_destination(p, OBS, COMPS)["message"]
+
+
+@pytest.mark.parametrize("kind,kinds,want", [
+    # 1. A kind override wins over the component's entry: every Alert is an observability CR.
+    ("Alert", OBS, ("krateo-platformops/observability", "config.targets.Alert")),
+    # 2. With no override for the kind, the component's entry.
+    ("Documentation", OBS, ("krateo-platformops/snowplow", "config.destinations.components.snowplow")),
+    ("Alert", {}, ("krateo-platformops/snowplow", "config.destinations.components.snowplow")),
+    # A kind override wins even over a component's prompt.
+    ("Prompt", {"Prompt": {"repo": "o/prompts", "pathPrefix": "p"}}, ("o/prompts", "config.targets.Prompt")),
+])
+def test_precedence_is_kind_then_component_then_none(kind, kinds, want):
+    p = _prop(kind=kind, subject="snowplow/sar-unauthorized", path="f.yaml")
+    repo, _, source = targets.destination(p, kinds, dict(COMPS, snowplow=dict(COMPS["snowplow"], prompt={
+        "repo": "krateo-agentiko/snowplow-agent", "path": "p.yaml"})))
+    assert (repo, source) == want
+
+
+@pytest.mark.parametrize("components", [None, {}])
+def test_an_absent_map_gives_no_destination_but_the_kind_override_still_applies(components, monkeypatch):
+    monkeypatch.setattr(targets, "COMPONENTS", {})
+    doc = _prop(kind="Documentation", subject="snowplow/x", repo="krateo-platformops/snowplow", fmt="markdown")
+    targets.aim(doc, OBS, components)
+    assert doc["target"]["repo"] == ""
+    alert = _prop(subject="snowplow/x")
+    targets.aim(alert, OBS, components)
+    assert alert["target"]["repo"] == "krateo-platformops/observability"
+
+
+def test_configured_keys_meet_subjects_however_either_is_cased():
+    p = _prop(kind="Documentation", subject="snowplow/x", fmt="markdown")
+    targets.aim(p, {}, {"Snowplow": {"repo": "krateo-platformops/snowplow"}})
+    assert p["target"]["repo"] == "krateo-platformops/snowplow"
+
+
+def test_the_seeded_values_validate_against_the_schema():
+    """What the installer applies: values.yaml through values.schema.json, the new map included."""
+    import jsonschema
+    schema = json.loads((ROOT / "helm/nightly-review/values.schema.json").read_text())
+    values = yaml.safe_load((ROOT / "helm/nightly-review/values.yaml").read_text())
+    jsonschema.validate(values, schema)
+    bad = json.loads(json.dumps(values))
+    bad["config"]["destinations"]["components"]["snowplow"]["repo"] = "krateo-platformops"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+
+
+# rr-20260930-0200's proposals, as they are on 057 (kubectl get proposals, read-only, 2026-09-30).
+RR_0200 = [
+    ("Alert", "snowplow/subjectaccessreview-unauthorized", "krateo-observability",
+     "alerts/snowplow-subjectaccessreview-unauthorized.yaml"),
+    ("Alert", "github-provider-kog-pullrequest-controller/cannot-observe-external-resource", "krateo-observability",
+     "alerts/kog-provider-cannot-observe-external-resource.yaml"),
+    ("Prompt", "installer-agent/repeated-get-resource-yaml", "krateo-agentiko/installer-agent",
+     "prompts/installer_agent.txt"),
+    ("Alert", "installer-chart-inspector/rbac-generation-http-500", "krateo-observability",
+     "alerts/chart-inspector-rbac-generation-failure.yaml"),
+    ("Prompt", "autopilot/suggest-widget-kinds-to-specialist", "krateo-agentiko/autopilot", "prompts/autopilot.txt"),
+]
+
+
+def test_rr_20260930_0200_replayed_through_the_seeded_values():
+    """The night that motivated this, through the chart's own values.yaml: the Alerts land in the
+    observability chart, the Prompts in the agents' real prompt files — nothing the model built."""
+    cfg = yaml.safe_load((ROOT / "helm/nightly-review/values.yaml").read_text())["config"]
+    got = []
+    for kind, subject, repo, path in RR_0200:
+        p = _prop(kind=kind, subject=subject, repo=repo, path=path)
+        targets.aim(p, cfg["targets"], cfg["destinations"]["components"])
+        got.append((p["target"]["repo"], p["target"]["path"]))
+    obs = "charts/krateo-observability/templates/"
+    assert got == [
+        ("krateo-platformops/observability", obs + "snowplow-subjectaccessreview-unauthorized.yaml"),
+        ("krateo-platformops/observability", obs + "kog-provider-cannot-observe-external-resource.yaml"),
+        ("krateo-agentiko/installer-agent", "helm/installer-agent/files/prompts-eng.yaml"),
+        ("krateo-platformops/observability", obs + "chart-inspector-rbac-generation-failure.yaml"),
+        ("krateo-agentiko/autopilot", "chart/files/prompts-eng.yaml"),
+    ]
+
+
+def test_every_agent_in_the_seeded_values_has_its_prompt():
+    comps = yaml.safe_load((ROOT / "helm/nightly-review/values.yaml").read_text())["config"]["destinations"]["components"]
+    for agent in ("autopilot", "frontend-agent", "core-provider-agent", "installer-agent", "incident-agent",
+                  "clickstack-agent", "snowplow-agent", "authn-agent", "k8s-agent", "helm-agent"):
+        assert comps[agent]["prompt"]["repo"].startswith("krateo-agentiko/") and comps[agent]["prompt"]["path"], agent
 
 
 def test_an_already_correct_target_is_no_note():
@@ -459,6 +633,16 @@ def test_the_prompt_says_the_destination_is_fixed():
     msg = prompt.build_user_message({"from": "a", "to": "b"}, {"x": "y"}, destinations=OBS)
     assert "FIXED DESTINATIONS" in msg and "krateo-platformops/observability" in msg
     assert "charts/krateo-observability/templates/" in msg
+
+
+def test_the_prompt_says_destinations_are_configured_and_names_the_components():
+    import prompt
+    msg = prompt.build_user_message({"from": "a", "to": "b"}, {"x": "y"}, destinations=OBS, components=COMPS)
+    header = msg.split("DATA REGION")[0]
+    assert "CONFIGURED COMPONENTS" in header and "installer-agent, kagent, snowplow" in header
+    assert "WHERE PROPOSALS LAND IS CONFIGURED" in prompt.SYSTEM
+    assert "krateo-agentiko repositories" not in prompt.SYSTEM, "the prompt must not steer the model to an org"
+    assert "CONFIGURED COMPONENTS" not in prompt.build_user_message({"from": "a", "to": "b"}, {"x": "y"})
     assert "FIXED DESTINATIONS" not in prompt.build_user_message({"from": "a", "to": "b"}, {"x": "y"})
 
 
@@ -625,6 +809,8 @@ def _drive(monkeypatch):
                               content="# x", repo="krateo-platformops/does-not-exist"), confidence="low"),
                    dict(_prop(kind="Prompt", subject="busy/skips-the-child", fmt="diff", content="+ name it",
                               repo="krateo-platformops/guessed", path="prompts/busy.md"), confidence="medium"),
+                   dict(_prop(kind="Widget", subject="portal/missing-page", content="kind: Page",
+                              repo="krateo-platformops/portal-guess", path="pages/p.yaml"), confidence="low"),
                ]}
     asked = []
     monkeypatch.setattr(M.autopilot, "service_jwt", lambda: None)
@@ -636,8 +822,15 @@ def _drive(monkeypatch):
             "promptTokenCount": 9, "candidatesTokenCount": 3, "totalTokenCount": 12}}})
     monkeypatch.setattr(M.autopilot, "ask", ask)
     monkeypatch.setattr(M.publish, "publish_version", lambda: "v1-8-53")
-    # The chart's values.yaml destinations, as the CronJob would pass them.
+    # The chart's values.yaml destinations, as the CronJob would pass them. busy's prompt is configured in
+    # a DIFFERENT repository from the one its Agent's annotation declares, so the run shows which one wins;
+    # kagent points at a repository GitHub denies; `portal` is not configured at all.
     monkeypatch.setattr(targets, "DESTINATIONS", OBS)
+    monkeypatch.setattr(targets, "COMPONENTS", {
+        "busy": {"repo": "krateo-agentiko/busy-agent",
+                 "prompt": {"repo": "krateo-agentiko/busy-prompts", "path": "helm/busy/files/prompts-eng.yaml"}},
+        "kagent": {"repo": "krateo-platformops/does-not-exist", "pathPrefix": "docs"},
+    })
     heads = []
     def head(url, **k):
         heads.append((url, dict(k.get("headers") or {})))
@@ -681,7 +874,7 @@ def test_every_reviewrun_status_the_service_writes_is_declared(full_run):
 def test_every_proposal_the_service_writes_is_declared(full_run):
     schema = _crd_schema("proposal.crd.yaml")["properties"]
     created = [b for plural, b in full_run.creates if plural == "proposals"]
-    assert len(created) == 3
+    assert len(created) == 4
     for body in created:
         assert _undeclared(body["spec"], schema["spec"], "spec") == []
     statuses = [b["status"] for plural, _, b in full_run.status_writes if plural == "proposals"]
@@ -704,13 +897,34 @@ def test_a_missing_repo_is_recorded_and_written_but_gets_no_claim(full_run):
     (cond,) = [c for c in st["conditions"] if c["type"] == "TargetResolved"]
     assert (cond["status"], cond["reason"]) == ("False", "NotFoundOrPrivate")
     claims = [b for plural, b in full_run.creates if plural == "builderpublishes"]
-    assert [c["spec"]["target"]["repo"] for c in claims] == ["observability", "busy-agent"]
+    assert [c["spec"]["target"]["repo"] for c in claims] == ["observability", "busy-prompts"]
 
 
-def test_a_prompt_proposal_goes_to_the_repo_the_agent_declares(full_run):
-    """The model guessed krateo-platformops/guessed; the Agent's annotation names the prompt's home."""
+def test_a_prompt_proposal_goes_where_the_values_say_not_where_the_agent_declares(full_run):
+    """The model guessed krateo-platformops/guessed and the Agent's annotation says busy-agent: the values
+    say busy-prompts, at one exact file, and only the values count."""
     (prompt,) = [b for plural, b in full_run.creates if plural == "proposals" and b["spec"]["kind"] == "Prompt"]
-    assert prompt["spec"]["target"]["repo"] == "krateo-agentiko/busy-agent"
+    assert prompt["spec"]["target"] == {"repo": "krateo-agentiko/busy-prompts",
+                                        "path": "helm/busy/files/prompts-eng.yaml"}
+
+
+def test_a_proposal_with_no_destination_is_written_without_a_repo_and_never_published(full_run):
+    by_name = {b["metadata"]["name"]: b for plural, b in full_run.creates if plural == "proposals"}
+    (widget,) = [b for b in by_name.values() if b["spec"]["kind"] == "Widget"]
+    assert widget["spec"]["target"] == {"repo": "", "path": "p.yaml"}
+    assert widget["spec"]["fingerprint"] == P.fingerprint(widget["spec"])
+    st = full_run.proposals[widget["metadata"]["name"]]["status"]
+    (cond,) = [c for c in st["conditions"] if c["type"] == "TargetResolved"]
+    assert (cond["status"], cond["reason"], cond["message"]) == (
+        "False", "NoDestination", "no destination configured for component portal; add it to config.destinations")
+    assert not any("portal-guess" in c["spec"]["target"]["repo"] or not c["spec"]["target"]["repo"]
+                   for plural, c in full_run.creates if plural == "builderpublishes")
+    assert all(url.rstrip("/").split("/repos/")[1].count("/") == 1 for url, _ in full_run.heads), \
+        "an empty repository must never reach the existence check"
+    final = [b["status"] for plural, _, b in full_run.status_writes if plural == "reviewruns"][-1]
+    (notes,) = [c for c in final["conditions"] if c["type"] == "ValidationNotes"]
+    assert "Widget proposal krateo-platformops/portal-guess/pages/p.yaml cleared: no destination configured " \
+           "for component portal" in notes["message"]
 
 
 def test_the_main_review_gets_the_assessment_and_not_the_transcript(full_run):
@@ -724,6 +938,8 @@ def test_the_main_review_gets_the_assessment_and_not_the_transcript(full_run):
     assert "because its child failed" not in main_msg.replace('"its child failed"', ""), \
         "only the verified excerpt may appear, never the reply"
     assert "yyyyyyyyyy" not in main_msg, "a tool result reached the main review"
+    assert "use the spelling listed: busy, kagent" in main_msg.split("DATA REGION")[0], \
+        "the configured components must reach the model"
 
 
 def test_every_stats_key_evidence_assigns_by_subscript_is_declared():
