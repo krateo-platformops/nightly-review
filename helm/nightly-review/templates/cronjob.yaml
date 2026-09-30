@@ -83,6 +83,11 @@ spec:
                 {{- end }}
                 - name: TARGET_DESTINATIONS
                   value: {{ .Values.config.targets | default dict | toJson | quote }}
+                {{- /* dig for the same reason as targetCheck: no schema default fills
+                       config.destinations, and an install without it must render (every proposal then
+                       records NoDestination) rather than fail on a nil map. */}}
+                - name: TARGET_COMPONENTS
+                  value: {{ dig "destinations" "components" dict .Values.config | toJson | quote }}
                 - name: EVIDENCE_MAX_CHARS
                   value: {{ .Values.config.evidenceMaxChars | quote }}
                 # A JSON blob so the queries stay reviewable as data.

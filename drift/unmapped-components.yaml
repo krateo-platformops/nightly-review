@@ -1,0 +1,28 @@
+# INSTALLER COMPONENTS DELIBERATELY LEFT WITHOUT A PROPOSAL DESTINATION — each with the reason it was
+# reviewed. The `drift` workflow reads the installer's pins (krateo-platformops/installer
+# chart/files/component-pins.yaml, main) and fails on any pinned component that has neither an entry in
+# helm/nightly-review/values.yaml config.destinations.components nor a line here. A NEW component must
+# fail CI and be decided by a person, never fall through to NoDestination unnoticed — and never be
+# pointed at a plausible repository nobody checked, which would resolve RepoFound and publish to the
+# wrong place, quieter than today's 404.
+#
+# A line here is a decision, not a default: it needs a reason, it is an error for a component that also
+# has an entry, and it is an error for a component the installer no longer pins (the review is stale).
+unmapped:
+  gateway-api-crds: >-
+    Upstream Gateway API CRDs, wrapped as a chart published to oci://ghcr.io/krateo-blueprints/charts.
+    No source repository for the wrapper exists in krateo-blueprints (checked 2026-09-30); a finding about
+    upstream CRDs is not a pull request this platform can open.
+  agentgateway: >-
+    Upstream agentgateway (cr.agentgateway.dev images), wrapper chart published to
+    oci://ghcr.io/krateo-blueprints/charts with no source repository found. Findings about the gateway's
+    configuration belong to agentgateway-policies / krateo-agent-gateway, which are mapped.
+  cert-manager: >-
+    Upstream cert-manager (quay.io/jetstack images), wrapper chart published to
+    oci://ghcr.io/krateo-blueprints/charts with no source repository found.
+  cert-manager-issuers: >-
+    Issuer manifests for cert-manager, wrapper chart published to oci://ghcr.io/krateo-blueprints/charts
+    with no source repository found.
+  external-dns: >-
+    Upstream external-dns (registry.k8s.io image), wrapper chart published to
+    oci://ghcr.io/krateo-blueprints/charts with no source repository found.

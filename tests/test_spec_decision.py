@@ -228,6 +228,8 @@ def test_a_run_mirrors_first_and_leaves_a_rejected_repeat_alone(monkeypatch):
     monkeypatch.setattr(M.autopilot, "ask", lambda *a, **k: ({"summary": "s", "proposals": [prop]}, "{}", {}))
     monkeypatch.setattr(M.targets, "resolve", lambda *a, **k: {"type": "TargetResolved", "status": "True",
                                                                 "reason": "RepoFound"})
+    # The values put snowplow where the proposal already points, so aiming leaves its fingerprint alone.
+    monkeypatch.setattr(M.targets, "COMPONENTS", {"snowplow": {"repo": "krateo-platformops/snowplow"}})
 
     assert M.main() == 0
     assert [b for plural, b in api.creates if plural == "proposals"] == []

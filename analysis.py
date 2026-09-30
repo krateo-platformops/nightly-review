@@ -77,8 +77,9 @@ CATEGORIES = ("misroute", "refusal", "wrong-or-invented", "tool-failure", "loop"
 SCOPE = "all-users: full conversations including agent replies and tool output, redacted"
 
 # Where an Agent (or the ConfigMap its prompt comes from) may say which repository its prompt lives in.
-# None of 057's sixteen agents carries one today; the model then proposes a repository and the
-# TargetResolved condition records what GitHub said.
+# RECORDED ON THE RUN, NEVER A DESTINATION: a Prompt proposal lands where config.destinations says
+# (targets.aim), because destinations come from the chart's values only. None of 057's sixteen agents
+# carries one today.
 PROMPT_REPO_ANNOTATIONS = ("krateo.io/prompt-repo", "krateo.io/source-repo", "org.opencontainers.image.source")
 
 # ---------------------------------------------------------------------------------------------------
@@ -831,10 +832,10 @@ def render_for_review(assessments, stats=None):
                  f"at window end, {m.get('withARepeatedCall3x', 0)} with a call repeated 3x+, "
                  f"{m.get('delegatedByAnotherAgent', 0)} delegated by another agent",
                  f"  prompt source: {a.get('promptSource') or 'unknown'}",
-                 (f"  prompt repository: {a['promptRepo']} (declared by {a['promptRepoFrom']}) — use it as target.repo"
-                  if a.get("promptRepo") else
-                  "  prompt repository: not declared on the Agent — propose one; agent prompts live in "
-                  "private krateo-agentiko repositories")]
+                 # NO REPOSITORY IS SUGGESTED HERE ANY MORE. This line used to tell the model to use a
+                 # declared repository, or to "propose one" in krateo-agentiko — and it proposed repositories
+                 # that do not exist. Where a Prompt proposal lands is config.destinations (targets.aim).
+                 ]
         if a.get("summary"):
             lines.append(f"  summary: {a['summary']}")
         if a.get("servedWell"):
@@ -879,16 +880,6 @@ def covered_agent_keys(assessments):
     """kagent agent_ids whose conversations the analysis read, for evidence.fold_questions."""
     return {evidence._agent_key(a["agent"]) for a in assessments}
 
-
-_SUBJECT_COMPONENT = re.compile(r"^([^/]+)/")
-
-
-def retarget(proposal, assessments):
-    """A Prompt proposal about an agent whose prompt repository is DECLARED (annotation) is aimed there,
-    whatever the model chose. Returns a note when it changed something, else None. Matching is on the
-    subject's component — the agent the finding is about — never on the model's choice of repository."""
-    if proposal.get("kind") != "Prompt":
-        return None
     m = _SUBJECT_COMPONENT.match(proposal.get("subject") or "")
     if not m:
         return None

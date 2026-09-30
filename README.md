@@ -119,10 +119,58 @@ TroubleshootingReport. The portal sends a merge-patch with the user's own token:
   `False/RepoNotFound`; a rejected token (401) is `Unknown/CheckFailed`, never "not found". Without a
   token, `False/NotFoundOrPrivate` (missing, or private — an anonymous check cannot tell). False is a
   normal state, not a rejection: the finding stands and wants re-aiming.
-- **Fixed destinations.** For a kind in `config.targets` (values.yaml: `Alert` ->
-  `krateo-platformops/observability`, under `charts/krateo-observability/templates`) the service
-  replaces `target.repo` and the path's directory before fingerprinting, notes the move in
-  `ValidationNotes`, and tells the model up front; the model keeps choosing the file name.
+  `False/NoDestination` means the values name no destination (below) and `target.repo` is empty.
+
+## Where proposals land
+
+**From the chart's values, and only from there.** The model never chooses a repository: whatever
+`target.repo` it returns is replaced or cleared, and only the file name of `target.path` survives
+(sanitised — it becomes a path in a pull request). rr-20260930-0200 is why: its proposals went to
+repositories built as `krateo-platformops/<component>` — `kagent`, `installer-chart-inspector`,
+`github-provider` — none of which exist, and its Alerts to `krateo-observability`, which has no owner.
+
+Precedence, first match wins:
+
+1. **`config.targets.<kind>`** — a kind override (values.yaml: `Alert` -> `krateo-platformops/observability`
+   under `charts/krateo-observability/templates`, because every Alert is an `observability.krateo.io` CR
+   whatever it is about).
+2. **`config.destinations.components.<component>`** — the subject's `component/` half, normalised like
+   the subject. A proposal lands in `repo` under `pathPrefix`. A **Prompt** proposal lands in
+   `prompt.repo` at `prompt.path`, exactly; a component with no `prompt` is no destination for one.
+3. **None.** `target.repo` is cleared, the path keeps only its file name, the proposal records
+   `TargetResolved False/NoDestination` — "no destination configured for component X; add it to
+   config.destinations" — and it is never published. It is still written: the finding is real.
+
+Every move and every clearing is a line in the run's `ValidationNotes`, and the fingerprint is recomputed
+over the target the proposal ends up with. The model is told destinations are configured, and is given
+the configured component names so it spells a known component the way the map does.
+
+```yaml
+config:
+  destinations:
+    components:
+      snowplow:  { repo: krateo-platformops/snowplow, pathPrefix: docs }
+      autopilot: { repo: krateo-agentiko/autopilot, pathPrefix: docs,
+                   prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
+```
+
+**Adding a component.** Take the name from a `NoDestination` message (it is the subject's component, as
+the evidence spells it: a Deployment, a ClickHouse `ServiceName`, a kagent agent name), check the
+repository exists (`gh api repos/<owner>/<name>`, and `.../contents/<path>` for a prompt), and add the key.
+A component seen under two spellings needs two keys. Helm merges maps, so an install adds a key by
+setting it and drops a seeded one with `<component>: null`. There is **no schema default** at any depth
+under `config.destinations` or `config.targets`: core-provider copies schema defaults into the live
+composition spec, so a default would be a destination nobody typed. The seeded map in values.yaml says
+where each entry was verified, and what was left out because no repository could be.
+
+**The map cannot drift silently.** A stale entry pointing at a real-but-wrong repository would resolve
+`RepoFound` and publish to the wrong place, quieter than a 404. The `drift` workflow
+(`.github/workflows/drift.yaml`: every pull request, every push to main, and daily, because what drifts
+is the installer) reads `chart/files/component-pins.yaml` and `ociRepo` from krateo-platformops/installer
+main and fails when a pinned component has neither an entry nor a reasoned line in
+`drift/unmapped-components.yaml`, when an entry's organisation (or its prompt's) differs from the one the
+pins publish that component from, or when the allowlist names a component that is mapped or no longer
+pinned. A failed fetch fails the job. The failure lists what to add.
 
 ## What keeps it honest
 
@@ -200,12 +248,10 @@ where they would evict the ClickHouse and Kubernetes evidence that produced ever
 - **Excluded:** the reviewer itself, always, and `excludeAgents` (default `*-bench`: a benchmark's
   traffic is a harness's, and product prompts must not be tuned from it). Agents with sessions but no
   longer deployed are skipped: their rows are history.
-- **Where a Prompt proposal lands.** If the `Agent` or its prompt ConfigMap carries
-  `krateo.io/prompt-repo` (or `krateo.io/source-repo`, `org.opencontainers.image.source`), a Prompt
-  proposal about that agent is aimed there, whatever the model chose, with a validation note. Otherwise
-  the model proposes a repository and `TargetResolved` records what GitHub said — for agent prompts,
-  which live in private `krateo-agentiko` repositories, that is `RepoFound` with the token and
-  `NotFoundOrPrivate` without it.
+- **Where a Prompt proposal lands** is `config.destinations.components.<agent>.prompt` (see *Where
+  proposals land*). A `krateo.io/prompt-repo` (or `krateo.io/source-repo`,
+  `org.opencontainers.image.source`) annotation on the `Agent` or its prompt ConfigMap is recorded on the
+  run as `promptRepo`, and no longer moves anything: destinations come from the values only.
 - **Coverage, in words.** `status.coverage` counts what the review actually saw — conversations and
   characters read of the total, agents skipped and why, sources cut or silent — and, whenever anything
   was cut, its sentence opens `status.summary` (e.g. "Coverage: Based on 21 of 65 agent conversations;
@@ -231,7 +277,8 @@ See `helm/nightly-review/values.yaml`, and `values.schema.json`, whose defaults 
 applies. The values that matter: `clickhouseQueries` (the reviewable surface; adapt them to your
 schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
 `config.targetCheckApiUrl` (empty disables the existence check), `config.targetCheck.tokenSecret`
-(the credential for it; empty name = anonymous), `config.targets` (fixed destinations per kind), `config.agentAnalysis` (the per-agent
+(the credential for it; empty name = anonymous), `config.targets` (destinations per kind, which win), `config.destinations.components` (destinations
+per subject component; see *Where proposals land*), `config.agentAnalysis` (the per-agent
 conversation budget; `maxAgents: 0` turns the stage off), `portalAdminAccess`, and `decisionPolicy`.
 
 Releases are cut by tag: `Chart.yaml` ships `CHART_VERSION`, and a `X.Y.Z` tag builds the image and

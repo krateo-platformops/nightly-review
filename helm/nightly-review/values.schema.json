@@ -137,7 +137,7 @@
         "targets": {
           "type": "object",
           "title": "Fixed destinations per proposal kind",
-          "description": "kind (Alert, Widget, Prompt, Policy or Documentation; any other key is ignored) -> {repo, pathPrefix}. For a kind listed here the service REPLACES the model's target.repo, and the directory of target.path, before fingerprinting, and records each move in the run's ValidationNotes; the model keeps choosing the file name. The prompt tells the model these destinations are fixed. NO SCHEMA DEFAULT, deliberately: core-provider applies schema defaults into the live composition spec, so a default here would be a silent override. The chart's values.yaml sets Alert -> krateo-platformops/observability under charts/krateo-observability/templates. Absent, no kind is retargeted. Helm merges maps: set a kind to add it, set Alert to null to drop it.",
+          "description": "kind (Alert, Widget, Prompt, Policy or Documentation; any other key is ignored) -> {repo, pathPrefix}. For a kind listed here the service REPLACES the model's target.repo, and the directory of target.path, before fingerprinting, and records each move in the run's ValidationNotes; the model keeps choosing the file name. The prompt tells the model these destinations are fixed. NO SCHEMA DEFAULT, deliberately: core-provider applies schema defaults into the live composition spec, so a default here would be a silent override. The chart's values.yaml sets Alert -> krateo-platformops/observability under charts/krateo-observability/templates. Wins over config.destinations (precedence: kind here > component in config.destinations.components > no destination). Absent, no kind is overridden. Helm merges maps: set a kind to add it, set Alert to null to drop it.",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
@@ -152,7 +152,58 @@
               },
               "pathPrefix": {
                 "type": "string",
-                "description": "Directory inside the repository; empty keeps the model's path."
+                "description": "Directory inside the repository; empty puts the file at the repository root. The directory never comes from the model."
+              }
+            }
+          }
+        },
+        "destinations": {
+          "type": "object",
+          "additionalProperties": false,
+          "title": "Where proposals land, per component",
+          "description": "THE ONLY SOURCE OF A PROPOSAL'S DESTINATION besides config.targets: the model's target.repo is never used. `components` maps a subject's component (the `component/` half, normalised like a subject: lowercase kebab) to {repo, pathPrefix, prompt}. A proposal about a listed component lands in `repo` under `pathPrefix`, keeping the model's file name; a Prompt proposal lands in prompt.repo at prompt.path exactly, and a component without `prompt` is no destination for one. Precedence: config.targets[kind] > components[component] > none. With none, target.repo is CLEARED, the proposal records TargetResolved False/NoDestination naming the component, and it is never published; it is still written, because the finding is real. NO SCHEMA DEFAULT at any depth, deliberately: core-provider applies schema defaults into the live composition spec. The chart's values.yaml seeds the platform's components, each verified to exist. Absent, every proposal not covered by config.targets records NoDestination. Helm merges maps: add a component by setting it, drop one with `<component>: null`.",
+          "properties": {
+            "components": {
+              "type": "object",
+              "description": "component -> destination. Keys are normalised like a subject's component, so spell them as the evidence spells the component (a Deployment name, a ClickHouse ServiceName, a kagent agent name); a component seen under two spellings needs two keys.",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "repo"
+                ],
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$",
+                    "description": "owner/name the component's source (or chart) lives in"
+                  },
+                  "pathPrefix": {
+                    "type": "string",
+                    "description": "Directory a non-Prompt proposal's file lands in; empty puts it at the repository root."
+                  },
+                  "prompt": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "repo",
+                      "path"
+                    ],
+                    "description": "Where this agent's system prompt lives, for Prompt proposals about it.",
+                    "properties": {
+                      "repo": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$",
+                        "description": "owner/name"
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The prompt file, exactly (e.g. chart/files/prompts-eng.yaml)."
+                      }
+                    }
+                  }
+                }
               }
             }
           }

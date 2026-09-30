@@ -234,8 +234,9 @@ spec:
                               description: >-
                                 The repository the Agent (or its prompt ConfigMap) DECLARES its prompt lives
                                 in, by annotation (krateo.io/prompt-repo, krateo.io/source-repo or
-                                org.opencontainers.image.source). A Prompt proposal about this agent is aimed
-                                there whatever the model chose. Absent when nothing declares one.
+                                org.opencontainers.image.source). RECORDED ONLY: a Prompt proposal lands
+                                where config.destinations says, never here. Absent when
+                                nothing declares one.
                             tokens:
                               type: object
                               description: What this agent's call reported. Absent when it reported nothing.

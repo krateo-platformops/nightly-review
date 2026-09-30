@@ -242,7 +242,10 @@ spec:
                     missing or private, and the check cannot tell which), False/RepoNotFound (404 to a
                     request carrying config.targetCheck's credential — missing, for every organisation that
                     credential can read), False/InvalidRepo (not an
-                    owner/name), or Unknown/CheckFailed|CheckDisabled (the question was not answered — including a
+                    owner/name), False/NoDestination (the chart's values name no destination for this
+                    kind or subject component, so spec.target.repo is EMPTY — the model's guess is never
+                    kept; the message names the component to add to config.destinations), or
+                    Unknown/CheckFailed|CheckDisabled (the question was not answered — including a
                     credential the API rejected, which says nothing about the repository).
                     False is a normal state, not a rejection: the finding stands and wants re-aiming.
                   items:

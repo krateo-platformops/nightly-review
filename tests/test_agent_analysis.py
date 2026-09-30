@@ -567,15 +567,13 @@ def test_a_question_cannot_forge_a_conversation_header():
     assert "krateo_system__NS__other" not in folded
 
 
-def test_retarget_uses_only_a_declared_repo_and_only_for_prompt_proposals():
-    a = [_full_assessment(promptRepo="krateo-agentiko/helm-agent", promptRepoFrom="Agent annotation x")]
-    prop = {"kind": "Prompt", "subject": "helm-agent/refuses-rollbacks", "target": {"repo": "krateo-platformops/x"}}
-    assert "retargeted" in AN.retarget(prop, a) and prop["target"]["repo"] == "krateo-agentiko/helm-agent"
-    doc = {"kind": "Documentation", "subject": "helm-agent/x", "target": {"repo": "krateo-platformops/docs"}}
-    assert AN.retarget(doc, a) is None and doc["target"]["repo"] == "krateo-platformops/docs"
-    undeclared = [_full_assessment()]
-    prop2 = {"kind": "Prompt", "subject": "helm-agent/y", "target": {"repo": "krateo-agentiko/guess"}}
-    assert AN.retarget(prop2, undeclared) is None and prop2["target"]["repo"] == "krateo-agentiko/guess"
+def test_a_declared_prompt_repo_is_no_longer_a_destination():
+    """Destinations come from the chart's values only (config.destinations): the annotation-driven
+    retarget of #34 is gone, and the corpus no longer tells the model which repository to use."""
+    assert not hasattr(AN, "retarget")
+    a = _full_assessment(promptRepo="krateo-agentiko/helm-agent", promptRepoFrom="Agent annotation x")
+    body = AN.render_for_review([a], {"ok": True})
+    assert "krateo-agentiko" not in body and "target.repo" not in body
 
 
 # --- the A2A path -------------------------------------------------------------------------------

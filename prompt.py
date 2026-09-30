@@ -130,10 +130,9 @@ judgement about the conversations, so weigh it like any other evidence. Use it f
   - A PROMPT FINDING backed by conversations. Backed by two or more, it is a Prompt proposal: say what the
     prompt says or lacks (quote the excerpt it gives), cite the failure it causes with the count, and put
     the change in change.content against the prompt source it names (a ConfigMap key is a file in the
-    agent's chart). target.repo: the prompt repository the analysis names as declared, when it names
-    one; otherwise the repository you believe holds that agent's chart — agent prompts live in PRIVATE
-    krateo-agentiko repositories, so a target the existence check cannot see is expected and is not a
-    reason to withhold the proposal. Backed by one conversation, it is at most a low-confidence Prompt proposal.
+    agent's chart). Name the agent as the subject's component: where its prompt file lives is configured
+    (see WHERE PROPOSALS LAND), not yours to find. Backed by one conversation, it is at most a
+    low-confidence Prompt proposal.
   - A FAILURE PATTERN where people were not served and no prompt change would fix it. Repeated across
     conversations, it is a Documentation proposal (the answer people could not get, written down), or a
     Policy proposal when it is about ROUTING — a request reaching the wrong agent, or a delegation the
@@ -161,6 +160,14 @@ Never put counts, dates, thresholds or adjectives in it; they change every night
 of the subject is that it does not. Examples: installer-chart-inspector/rbac-generation-http-500,
 snowplow/subjectaccessreview-unauthorized, kagent/agent-never-used. Two proposals of different kinds
 about the same finding (an Alert and its Documentation) carry the same subject.
+
+WHERE PROPOSALS LAND IS CONFIGURED, NOT CHOSEN BY YOU. This platform's configuration maps each component
+(and some kinds) to a repository and directory. The service REPLACES whatever target.repo you give with
+the configured one, keeping only the file NAME of target.path; for a component with no configured
+destination it CLEARS target.repo, and the proposal is kept without one for a person to aim. So do not
+spend effort on repositories — never construct one from an organisation and a component name. Name the
+component in the subject, and give target.path as a file name for the change. Fill target.repo with the
+component name if you must fill it; it is not read.
 
 """ + ALERT_KIND
 
@@ -225,11 +232,11 @@ RESPONSE_SCHEMA = {
                             },
                         },
                     },
-                    # NOTE: `target.repo` is model-chosen and therefore untrusted. There is NO allowlist
-                    # any more (see the epitaph in proposals.py): the service holds no git credential and
-                    # every proposal becomes a pull request a human reads. What IS checked is whether the
-                    # repository exists — targets.resolve, recorded as the TargetResolved condition — and
-                    # that check validates the string's shape before it goes anywhere near a URL.
+                    # NOTE: `target.repo` is model output and is NEVER USED: targets.aim replaces it with the
+                    # configured destination or clears it, and keeps only a sanitised file name from `path`.
+                    # Still required so the contract the model has been answering does not change shape.
+                    # What IS checked is whether the configured repository exists — targets.resolve,
+                    # recorded as the TargetResolved condition.
                     "target": {
                         "type": "object",
                         "additionalProperties": False,
@@ -270,22 +277,31 @@ def _fence_id(window):
     return hashlib.sha256(f"{window['from']}|{window['to']}".encode()).hexdigest()[:12]
 
 
-def _destinations_note(destinations):
-    """The kinds whose destination is configuration, in words. The model aimed all three Alert proposals
-    of rr-20260930-0200 at `krateo-observability`, a repository that does not exist under any owner; the
-    service now overrides target.repo for these kinds (targets.aim), and saying so up front stops the
-    model spending the night guessing — and stops a reviewer reading a guess it was never allowed to make."""
+def _destinations_note(destinations, components=None):
+    """What is configured, in words. The model aimed all three Alert proposals of rr-20260930-0200 at
+    `krateo-observability`, a repository that does not exist under any owner, and built the rest as
+    `krateo-platformops/<component>`; the service now replaces or clears every target (targets.aim), and
+    saying so up front stops the model spending the night guessing. The COMPONENT NAMES are listed because
+    the lookup is by the subject's component: a finding about a listed component spelled another way
+    (chart-inspector for installer-chart-inspector) would find no destination."""
     lines = [f"  {kind:<13} -> {d['repo']}" + (f", file under {d['pathPrefix'].strip('/')}/" if d.get("pathPrefix") else "")
              for kind, d in sorted((destinations or {}).items()) if isinstance(d, dict) and d.get("repo")]
-    if not lines:
-        return ""
-    return ("FIXED DESTINATIONS. For these kinds the repository (and directory) is set by this platform's "
-            "configuration, not chosen by you: whatever target.repo you give is replaced, and only the file "
-            "NAME of target.path is kept. Name the file after the finding (e.g. the Alert's metadata.name).\n"
-            + "\n".join(lines) + "\n")
+    names = sorted(k for k, v in (components or {}).items() if isinstance(v, dict))
+    out = ""
+    if lines:
+        out += ("FIXED DESTINATIONS. For these kinds the repository (and directory) is set by this platform's "
+                "configuration, not chosen by you: whatever target.repo you give is replaced, and only the file "
+                "NAME of target.path is kept. Name the file after the finding (e.g. the Alert's metadata.name).\n"
+                + "\n".join(lines) + "\n")
+    if names:
+        out += ("CONFIGURED COMPONENTS. A proposal whose subject's component is one of these lands in that "
+                "component's configured repository (a Prompt proposal: in the agent's prompt file); any other "
+                "is kept with no repository. When the evidence is about one of these under another spelling, "
+                "use the spelling listed: " + ", ".join(names) + "\n")
+    return out
 
 
-def build_user_message(window, evidence_blocks, coverage=None, destinations=None):
+def build_user_message(window, evidence_blocks, coverage=None, destinations=None, components=None):
     """The single user turn: what was examined, how much of it, where fixed kinds land, then the fenced
     corpus.
 
@@ -300,7 +316,7 @@ def build_user_message(window, evidence_blocks, coverage=None, destinations=None
         header += (f"{coverage} This was counted by the service. Where the evidence was cut, say so in your "
                    f"summary and in each affected proposal's rationale, and do not describe a count as covering "
                    f"conversations or rows you were not shown.\n")
-    header += _destinations_note(destinations)
+    header += _destinations_note(destinations, components)
     fid = _fence_id(window)
     # Belt as well as braces: neutralise any literal closing tag in a body, so even a corpus that learns
     # the nonce cannot close the region. The replacement is visible in the prompt, which is deliberate —

@@ -162,6 +162,108 @@ config:
   # Alert is a new file beside it. Helm merges maps: add a kind by setting it, drop Alert with `Alert: null`.
   targets:
     Alert: { repo: krateo-platformops/observability, pathPrefix: charts/krateo-observability/templates }
+  # WHERE EVERY OTHER PROPOSAL LANDS: the subject's component -> {repo, pathPrefix, prompt?}. This is the
+  # ONLY other source of a destination — the model's target.repo is never used. Precedence: config.targets
+  # (kind) > this map (component) > none. A proposal about a component NOT listed here keeps its finding
+  # but loses its repository: TargetResolved False/NoDestination, "no destination configured for component
+  # X; add it to config.destinations", and no pull request. To add a component, add its key (spelled as
+  # the evidence spells it — Deployment, ServiceName or kagent agent name; the ReviewRun's NoDestination
+  # message prints it) with a repository that exists. A Prompt proposal lands at prompt.path in
+  # prompt.repo, exactly; a component with no `prompt` gets none.
+  #
+  # SEEDED 2026-09-30 from krateo-platformops/installer chart/files/component-pins.yaml, the Installer CR's
+  # spec.components[] and the Deployments on 057; EVERY repo checked with an authenticated
+  # `gh api repos/<owner>/<name>` and every prompt.path with `gh api .../contents/<path>`. pathPrefix is
+  # the repository's existing docs/ directory where it has one. Not seeded, because no repository could be
+  # verified as theirs: tk-swarm-ro (hand-applied benchmark probe), the *-bench agents, the upstream-image
+  # components whose wrapper charts publish from krateo-blueprints/charts (cert-manager, external-dns,
+  # agentgateway, gateway-api-crds — listed with reasons in drift/unmapped-components.yaml, which the
+  # drift workflow checks against the installer's pins), and the per-kind github-provider-kog-<kind>-controller Deployments
+  # (runtime in oasgen-provider's rest-dynamic-controller, configuration in github-provider-kog: which one
+  # a finding belongs to is not a lookup).
+  destinations:
+    components:
+      # --- agents: the chart repository, and the prompt file a Prompt proposal edits -------------------
+      # autopilot's prompts-eng.yaml carries three keys (autopilot, helm_agent, k8s_agent): helm-agent and
+      # k8s-agent are rendered by the krateo-autopilot chart, from the same file.
+      autopilot:           { repo: krateo-agentiko/autopilot, pathPrefix: docs, prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
+      helm-agent:          { repo: krateo-agentiko/autopilot, pathPrefix: docs, prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
+      k8s-agent:           { repo: krateo-agentiko/autopilot, pathPrefix: docs, prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
+      krateo-autopilot:    { repo: krateo-agentiko/autopilot, pathPrefix: docs }
+      frontend-agent:      { repo: krateo-agentiko/frontend-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/frontend-agent, path: helm/frontend-agent/files/prompts-eng.yaml } }
+      core-provider-agent: { repo: krateo-agentiko/core-provider-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/core-provider-agent, path: helm/core-provider-agent/files/prompts-eng.yaml } }
+      installer-agent:     { repo: krateo-agentiko/installer-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/installer-agent, path: helm/installer-agent/files/prompts-eng.yaml } }
+      incident-agent:      { repo: krateo-agentiko/incident-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/incident-agent, path: helm/incident-agent/files/prompts-eng.yaml } }
+      clickstack-agent:    { repo: krateo-agentiko/clickstack-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/clickstack-agent, path: helm/clickstack-agent/files/prompts-eng.yaml } }
+      snowplow-agent:      { repo: krateo-agentiko/snowplow-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/snowplow-agent, path: helm/snowplow-agent/files/prompts-eng.yaml } }
+      authn-agent:         { repo: krateo-agentiko/authn-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/authn-agent, path: helm/authn-agent/files/prompts-eng.yaml } }
+      # --- agent platform (krateo-agentiko) ---------------------------------------------------------------
+      kagent:              { repo: krateo-agentiko/kagent, pathPrefix: docs }
+      kagent-controller:   { repo: krateo-agentiko/kagent, pathPrefix: docs }
+      model-configs:       { repo: krateo-agentiko/model-configs, pathPrefix: docs }
+      agentgateway-policies: { repo: krateo-agentiko/agentgateway-policies, pathPrefix: docs }
+      krateo-agent-gateway:  { repo: krateo-agentiko/agentgateway-policies, pathPrefix: docs }
+      repo-mcp-server:     { repo: krateo-agentiko/repo-mcp-server, pathPrefix: docs }
+      config-refs:         { repo: krateo-agentiko/config-refs-mcp-server }
+      config-refs-mcp-server: { repo: krateo-agentiko/config-refs-mcp-server }
+      clickhouse-mcp-server: { repo: krateo-agentiko/clickhouse-mcp-server, pathPrefix: docs }
+      structure-graph-mcp-server: { repo: krateo-agentiko/structure-graph-mcp-server, pathPrefix: docs }
+      core-provider-chart-gate-mcp-server: { repo: krateo-agentiko/core-provider-agent, pathPrefix: docs }
+      # --- platform (krateo-platformops) ------------------------------------------------------------------
+      snowplow:            { repo: krateo-platformops/snowplow, pathPrefix: docs }
+      authn:               { repo: krateo-platformops/authn, pathPrefix: docs }
+      frontend:            { repo: krateo-platformops/frontend, pathPrefix: docs }
+      portal:              { repo: krateo-platformops/portal, pathPrefix: docs }
+      portal-agents:       { repo: krateo-platformops/portal, pathPrefix: docs }
+      git-provider:        { repo: krateo-platformops/git-provider, pathPrefix: docs }
+      oasgen-provider:     { repo: krateo-platformops/oasgen-provider, pathPrefix: docs }
+      # rest-dynamic-controller's own repository is archived; its code is oasgen-provider's go/rest-dynamic-controller.
+      rest-dynamic-controller: { repo: krateo-platformops/oasgen-provider, pathPrefix: docs }
+      # chart-inspector and composition-dynamic-controller: archived repositories too; the code is
+      # core-provider's go/chart-inspector and go/composition-dynamic-controller. The installer deploys
+      # them as installer-core-provider[-chart-inspector]; the review has called it installer-chart-inspector.
+      core-provider:       { repo: krateo-platformops/core-provider, pathPrefix: docs }
+      installer-core-provider: { repo: krateo-platformops/core-provider, pathPrefix: docs }
+      chart-inspector:     { repo: krateo-platformops/core-provider, pathPrefix: docs }
+      installer-chart-inspector: { repo: krateo-platformops/core-provider, pathPrefix: docs }
+      installer-core-provider-chart-inspector: { repo: krateo-platformops/core-provider, pathPrefix: docs }
+      composition-dynamic-controller: { repo: krateo-platformops/core-provider, pathPrefix: docs }
+      installer:           { repo: krateo-platformops/installer, pathPrefix: docs }
+      krateo-helm-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
+      helm-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
+      krateo-sse-proxy:    { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
+      sse-proxy:           { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
+      krateo-alert-troubleshooter: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      alert-troubleshooter: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      nightly-review:      { repo: krateo-platformops/nightly-review }
+      otel-collector:      { repo: krateo-platformops/otel-collector, pathPrefix: docs }
+      otel-collector-deployment-opentelemetry-collector: { repo: krateo-platformops/otel-collector, pathPrefix: docs }
+      # krateo-observability's chart ships ClickStack (Deployment krateo-clickstack) and the operators' charts.
+      krateo-observability: { repo: krateo-platformops/observability, pathPrefix: docs }
+      krateo-clickstack:   { repo: krateo-platformops/observability, pathPrefix: docs }
+      clickhouse-operator: { repo: krateo-platformops/observability, pathPrefix: docs }
+      mongodb-operator:    { repo: krateo-platformops/observability, pathPrefix: docs }
+      # --- the installer's own component names (component-pins.yaml), where they differ from the above ----
+      # Each pinned component has an entry or a reviewed reason in drift/unmapped-components.yaml; the
+      # `drift` workflow fails on a new pin that has neither. A -crd(s) component's chart lives beside
+      # its main chart (helm/<x>-crds, or charts/kagent-crds), so it shares that repository.
+      authn-crd:           { repo: krateo-platformops/authn, pathPrefix: docs }
+      oasgen-provider-crd: { repo: krateo-platformops/oasgen-provider, pathPrefix: docs }
+      frontend-crd:        { repo: krateo-platformops/frontend, pathPrefix: docs }
+      snowplow-crd:        { repo: krateo-platformops/snowplow, pathPrefix: docs }
+      git-provider-crd:    { repo: krateo-platformops/git-provider, pathPrefix: docs }
+      alert-troubleshooter-crd: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      nightly-review-crd:  { repo: krateo-platformops/nightly-review }
+      kagent-crds:         { repo: krateo-agentiko/kagent, pathPrefix: docs }
+      # The COMPOSITIONS' charts live in observability (charts/otel-collector-*); the collector's code, which
+      # the Deployment keys above point at, is otel-collector.
+      otel-collector-deployment: { repo: krateo-platformops/observability, pathPrefix: docs }
+      otel-collector-daemonset:  { repo: krateo-platformops/observability, pathPrefix: docs }
+      # Its chart is agentgateway-policies' helm/agentgateway-controller.
+      agentgateway-controller: { repo: krateo-agentiko/agentgateway-policies, pathPrefix: docs }
+      # --- blueprints (krateo-blueprints) -----------------------------------------------------------------
+      github-provider-kog: { repo: krateo-blueprints/github-provider-kog, pathPrefix: docs }
+      krateo-marketplace-catalog: { repo: krateo-blueprints/marketplace, pathPrefix: krateo-marketplace-catalog }
 
 # Credentials are referenced, never inlined.
 secrets:
