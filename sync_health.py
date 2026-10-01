@@ -60,25 +60,41 @@ MESSAGE_CHARS = 300
 SOURCE = "sync-health"
 AGENT = "nightly-review/sync-stall"
 
-# WHAT A MESSAGE SAYS WENT WRONG, most specific first: a 401 must be read before the "not found" a
-# controller may append to it. Each pattern is a stable signal for the Proposal's subject, so the same
-# outage tomorrow is the same finding, whatever the counts.
+# WHAT A MESSAGE SAYS WENT WRONG, most specific first. Each pattern is a stable signal for the Proposal's
+# subject, so the same outage tomorrow is the same finding, whatever the counts.
+#
+# A STATUS CODE COUNTS ONLY IN HTTP CONTEXT: beside its reason phrase ("401 Unauthorized") or after a word
+# that introduces a status ("status 404", "returned 403"). A bare number is an object's particulars — "update
+# pull request 401 in org/repo: 422 Unprocessable Entity" is a 422, and a repository named r-404-old is not
+# a 404.
+def _http(code, phrase):
+    return (rf"\b(?:http(?:/[\d.]+)?|status(?:\s*code)?|code|returned|got|answered|response)\s*[:=]?\s*{code}\b"
+            rf"|\b{code}\s+{phrase}")
+
+
 PATTERNS = [
+    # A Secret the object (or its Configuration) names does not exist IN THIS CLUSTER. Before every remote
+    # pattern: the apiserver's `secrets "x" not found` would otherwise read as a deleted repository.
+    ("local-secret-missing", "a Secret the resources reference does not exist in the cluster",
+     re.compile(r"\bsecrets?\s+\"[^\"]*\"\s+not found|\bsecret\b[^:]{0,80}\bnot found\b", re.I)),
+    # Before permission-denied: GitHub answers a primary or secondary rate limit with 403, not 429.
+    ("rate-limited", "rate limited by the remote API",
+     re.compile(_http(429, "Too Many Requests") + r"|rate.?limit|too many requests", re.I)),
     ("credential-rejected", "credential rejected — expired, revoked or wrong",
-     re.compile(r"\b401\b|unauthori[sz]ed|bad credentials|authentication (?:failed|required)|invalid (?:token|credentials)",
+     re.compile(_http(401, "Unauthori[sz]ed")
+                + r"|\bunauthori[sz]ed\b|bad credentials|authentication (?:failed|required)|invalid (?:token|credentials)",
                 re.I)),
     ("permission-denied", "permission denied — token scope, SSO authorisation or an org policy",
-     re.compile(r"\b403\b|forbidden|resource not accessible|permission denied", re.I)),
-    ("rate-limited", "rate limited by the remote API",
-     re.compile(r"\b429\b|rate.?limit", re.I)),
+     re.compile(_http(403, "Forbidden") + r"|\bforbidden\b|resource not accessible|permission denied", re.I)),
     ("remote-not-found", "remote object not found — deleted, renamed, or not visible to the credential",
-     re.compile(r"\b404\b|repository not found|\bnot found\b", re.I)),
+     re.compile(_http(404, "Not Found") + r"|repository not found|\bnot found\b", re.I)),
     ("remote-rejected-request", "remote rejected the request as invalid",
-     re.compile(r"\b422\b|unprocessable", re.I)),
+     re.compile(_http(422, "Unprocessable") + r"|\bunprocessable\b", re.I)),
     ("remote-unreachable", "remote unreachable — timeout, DNS or connection",
      re.compile(r"deadline exceeded|timed? ?out|connection refused|connection reset|no such host|\bEOF\b", re.I)),
 ]
-_FALLBACK_STRIP = re.compile(r"\"[^\"]*\"|'[^']*'|https?://\S+|/\S+|\b[0-9a-f]{7,}\b|\d+")
+_URL = re.compile(r"https?://\S+")
+_FALLBACK_STRIP = re.compile(r"\"[^\"]*\"|'[^']*'|/\S+|\b[0-9a-f]{7,}\b|\d+")
 
 
 def classify(reason, message):
@@ -89,7 +105,8 @@ def classify(reason, message):
     for signal, description, pat in PATTERNS:
         if pat.search(text):
             return signal, description
-    head = _FALLBACK_STRIP.sub(" ", text.split(":", 1)[0])
+    # URLs out BEFORE the split: "GET https://api.github.com/...: ..." split on its first colon is `GET https`.
+    head = _FALLBACK_STRIP.sub(" ", _URL.sub(" ", text).split(": ", 1)[0])
     slug = P._slug(head)[:60].strip("-")
     if not slug:
         slug = P._slug(reason or "") or "unknown"
@@ -100,9 +117,12 @@ def _parse(ts):
     if not isinstance(ts, str):
         return None
     try:
-        return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        parsed = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # A time with no zone is UTC, as the apiserver writes it. Left naive, comparing it with the aware cutoff
+    # raised TypeError and cost the night every sync finding.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
 
 def failing_condition(obj):
@@ -215,6 +235,11 @@ def gather(api, discover, now=None, groups=None, threshold_minutes=None):
         try:
             served = discover(group)
         except Exception as exc:                              # noqa: BLE001
+            # A configured group this cluster does not serve (its provider is not installed) is nothing to
+            # check, not a failure: degrading on it would make every run PartiallyCompleted.
+            if getattr(exc, "status", None) == 404:
+                stats["note"] = stats.get("note", "") + f"{group} is not served by this cluster; nothing to check; "
+                continue
             fail(f"discovery of {group}", exc)
             continue
         by_kind = {kind: (version, plural) for version, plural, kind, _ in served}
@@ -259,7 +284,7 @@ def gather(api, discover, now=None, groups=None, threshold_minutes=None):
                     cns = ref.get("namespace") or ns
                     g["configurations"].add(f"{kind}Configuration {cns}/{ref['name']}")
                     g["secrets"] |= _configuration_secrets(api, group, by_kind.get(f"{kind}Configuration"),
-                                                           cns, ref["name"], config_cache, fail)
+                                                           cns, ref["name"], config_cache)
     stats["stalled"] = sum(g["count"] for g in grouped.values())
     stats["freshFailures"] = sum(fresh.values())
 
@@ -276,18 +301,21 @@ def gather(api, discover, now=None, groups=None, threshold_minutes=None):
     return P.redact(_render(findings, fresh, threshold, props)), stats, props
 
 
-def _configuration_secrets(api, group, served, namespace, name, cache, fail):
+def _configuration_secrets(api, group, served, namespace, name, cache):
     """The Secret NAMES a Configuration's spec points at. The Configuration is a custom resource in the
-    provider's own group; it is read, the Secret is not."""
-    if not served:
+    provider's own group; it is read, the Secret is not.
+
+    BEST EFFORT, NEVER A FAILURE OF THE SOURCE. `<Kind>Configuration` is a naming convention, not a contract,
+    and a reference may carry no namespace; when the lookup cannot be made or answers nothing, the Secret is
+    simply left unnamed. The finding stands without it."""
+    if not served or not namespace:
         return set()
     key = (group, served[1], namespace, name)
     if key not in cache:
         try:
             obj = api.get_namespaced_custom_object(group, served[0], namespace, served[1], name)
             cache[key] = secret_refs((obj or {}).get("spec") or {}, namespace)
-        except Exception as exc:                              # noqa: BLE001
-            fail(f"{served[1]}.{group} {namespace}/{name}", exc)
+        except Exception:                                     # noqa: BLE001
             cache[key] = set()
     return cache[key]
 
@@ -324,6 +352,10 @@ def _content(g, threshold):
                      "and a missing SSO authorisation all look like this. Rotate or re-authorise the token in "
                      "the Secret(s) above; the controllers retry on their own, so the conditions clear without "
                      "touching the resources.")
+    elif g["signal"] == "local-secret-missing":
+        lines.append("A Secret these resources (or their Configuration) reference does not exist in the cluster: "
+                     "deleted, renamed, or never created in that namespace. Nothing is wrong on the remote side. "
+                     "Recreate the Secret named in the controllers' message; the controllers retry on their own.")
     elif g["signal"] == "remote-not-found":
         lines.append("The remote object is gone or invisible to the credential: a deleted or renamed "
                      "repository, or a token that lost access to it.")
@@ -356,7 +388,9 @@ def _proposal(g, threshold):
                       "summary": (f"{g['count']} object(s) with " + ", ".join(
                           f"{r} x{n}" for r, n in g["reasons"].most_common())
                                   + f" for over {threshold}m; e.g. " + "; ".join(g["examples"]))[:2000]}],
-        "target": {"repo": g["component"], "path": f"{g['component']}-{g['signal']}.md"},
+        # No repository of its own: targets.aim gives it the configured one. A placeholder here read as the
+        # model's guess and made aim note a "retarget" every night.
+        "target": {"repo": "", "path": f"{g['component']}-{g['signal']}.md"},
         "change": {"format": "markdown", "content": _content(g, threshold)},
     }
 

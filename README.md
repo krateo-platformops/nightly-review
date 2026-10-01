@@ -219,9 +219,11 @@ revoked or re-scoped token and a deleted repository all show up the same way.
   wins: an old or odd-looking `Ready` beside it is not reported. `ignoreReasons` (`ReconcilePaused`)
   covers states someone set on purpose.
 - **What it reports.** Objects are grouped by the group's `component` and by what the message says went
-  wrong: credential rejected (401), permission denied (403), rate limited, remote not found (404), request
-  rejected (422), unreachable. Any other message is named by its first clause, with paths, quoted names and
-  numbers removed. Each group becomes **one Documentation Proposal** under `<component>/<pattern>`, e.g.
+  wrong, checked in this order: a local Secret missing (`secrets "x" not found`), rate limited (GitHub sends
+  this as a 403), credential rejected (401), permission denied (403), remote not found (404), request
+  rejected (422), unreachable. A status code counts only in HTTP context, either next to its reason phrase or
+  after a word like `status`, so a number in an object's name is never read as a status. Any other message
+  is named by its first clause, with URLs, paths, quoted names and numbers removed. Each group becomes **one Documentation Proposal** under `<component>/<pattern>`, e.g.
   `git-provider/credential-rejected`. It lands where `config.destinations.components` puts that component,
   carries `producedBy.agent: nightly-review/sync-stall` and is `high` confidence because it is a count,
   not an opinion. It goes through the same boundary as the model's proposals (item schema, `redact()`,

@@ -277,8 +277,16 @@ def main():
         if moved:
             notes.append(moved)
             prop["fingerprint"] = P.fingerprint(prop)
-    # The service's own findings were aimed when they were validated, after the gather.
+    # The service's own findings were aimed when they were validated, after the gather. A MODEL proposal about
+    # the same subject is dropped: the prompt says those groups are already proposed, and a model that writes
+    # one anyway would supersede the counted finding with a judged copy of it (same kind and subject) or sit
+    # beside it as a duplicate the reader has to reconcile.
     notes += service_notes
+    service_subjects = {p.get("subject") for p in service if p.get("subject")}
+    for prop in [p for p in kept if p.get("subject") in service_subjects]:
+        kept.remove(prop)
+        notes.append(f"DROPPED model {prop['kind']} proposal about {prop['subject']}: the sync-stall check "
+                     f"already proposed that subject this run")
     model_count = len(kept)
     kept = kept + service
 
@@ -364,7 +372,9 @@ def _service_findings(props):
     notes = [f"sync-stall {n}" for n in notes]
     for prop in kept:
         moved = targets.aim(prop)
-        if moved:
+        # Only "no destination" is worth a note: the service set no repository of its own, so a "retargeted"
+        # line would be the values doing their job, every night.
+        if moved and " cleared: " in moved:
             notes.append(moved)
         prop["fingerprint"] = P.fingerprint(prop)
     return kept, notes

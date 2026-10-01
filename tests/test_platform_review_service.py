@@ -722,7 +722,7 @@ def full_run(monkeypatch):
     return _drive(monkeypatch)
 
 
-def _drive(monkeypatch, ask_fails=False):
+def _drive(monkeypatch, ask_fails=False, extra_props=()):
     import datetime as dt
     import evidence as E
     import main as M
@@ -825,7 +825,7 @@ def _drive(monkeypatch, ask_fails=False):
                               repo="krateo-platformops/guessed", path="prompts/busy.md"), confidence="medium"),
                    dict(_prop(kind="Widget", subject="portal/missing-page", content="kind: Page",
                               repo="krateo-platformops/portal-guess", path="pages/p.yaml"), confidence="low"),
-               ]}
+               ] + list(extra_props)}
     asked = []
     monkeypatch.setattr(M.autopilot, "service_jwt", lambda: None)
     def ask(system, message, run_name, token=None, context=None, timeout=None):
@@ -1064,3 +1064,19 @@ def test_the_chart_grants_the_sync_check_read_only_on_its_groups_and_never_the_c
     cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
     assert 'dig "syncStall" dict .Values.config' in cron and "name: SYNC_STALL_GROUPS" in cron
     assert 'os.environ.get("SYNC_STALL_GROUPS")' in (ROOT / "sync_health.py").read_text()
+
+
+def test_a_model_proposal_about_a_service_subject_is_dropped(monkeypatch):
+    """Review of #40, finding 7: the model re-proposing a counted finding would supersede it with a judged
+    copy, or sit beside it as a duplicate."""
+    dup = dict(_prop(kind="Documentation", subject="Git-Provider/credential rejected", fmt="markdown",
+                     content="# token expired", repo="x/y"), confidence="medium")
+    api = _drive(monkeypatch, extra_props=[dup])
+    created = [b for plural, b in api.creates if plural == "proposals"]
+    assert len(created) == 6, "the four model proposals and the two service ones; not the duplicate"
+    (svc,) = [b for b in created if b["spec"].get("subject") == "git-provider/credential-rejected"]
+    assert svc["spec"]["producedBy"]["agent"] == "nightly-review/sync-stall"
+    final = [b["status"] for plural, _, b in api.status_writes if plural == "reviewruns"][-1]
+    (notes,) = [c for c in final["conditions"] if c["type"] == "ValidationNotes"]
+    assert ("DROPPED model Documentation proposal about git-provider/credential-rejected: the sync-stall "
+            "check already proposed that subject this run") in notes["message"]

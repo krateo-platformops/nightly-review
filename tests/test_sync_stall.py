@@ -306,3 +306,86 @@ def test_the_findings_are_capped_and_the_cap_is_recorded(monkeypatch):
     _, body, stats, props = _run(_outage())
     assert len(props) == 1 and stats["findings"] == 1 and "not proposed" in stats["note"]
     assert "not proposed (over the per-run cap)" in body
+
+
+# --- review of #40: one regression test per finding ------------------------------------------------
+
+@pytest.mark.parametrize("msg", ["403 API rate limit exceeded for user ID 123",
+                                 "403 You have exceeded a secondary rate limit. Please wait a few minutes"])
+def test_githubs_rate_limit_403_is_rate_limited_not_permission_denied(msg):
+    """Finding 1: GitHub answers both rate limits with 403."""
+    assert S.classify("ReconcileError", msg)[0] == "rate-limited"
+
+
+@pytest.mark.parametrize("msg,signal", [
+    ("update pull request 401 in org/repo: 422 Unprocessable Entity", "remote-rejected-request"),
+    ("sync krateo-blueprints/r-404-old: branch is protected", "sync-krateo-blueprints"),
+    ("GET https://api.github.com/repos/o/r-404-old: 500 Internal Server Error", "get-internal-server-error"),
+    ("unexpected status code: 404", "remote-not-found"),
+    ("request failed: status 401", "credential-rejected"),
+])
+def test_a_status_code_counts_only_in_http_context(msg, signal):
+    """Finding 2: a number in an object's name or id is not a status."""
+    assert S.classify("ReconcileError", msg)[0] == signal
+
+
+def test_a_missing_local_secret_is_its_own_pattern_with_its_own_advice():
+    """Finding 2: the apiserver's `secrets "x" not found` is not a deleted repository."""
+    msg = 'cannot get credentials: secrets "git-provider-credentials" not found'
+    assert S.classify("ReconcileError", msg)[0] == "local-secret-missing"
+    _, _, _, props = _run({"repoes": [_obj("x", _err(msg, 600))]})
+    (p,) = props
+    assert p["subject"] == "git-provider/local-secret-missing"
+    assert "does not exist in the cluster" in p["change"]["content"]
+    assert "deleted or renamed repository" not in p["change"]["content"]
+
+
+def test_the_fallback_strips_urls_before_it_takes_the_first_clause():
+    """Finding 3: every "GET https://..." message used to become `get-https`."""
+    a = S.classify("ReconcileError", "GET https://api.github.com/repos/o/a: unexpected end of JSON input")[0]
+    b = S.classify("ReconcileError", "GET https://api.github.com/repos/o/b?x=1: unexpected end of JSON input")[0]
+    assert a == b == "get-unexpected-end-of-json-input"
+
+
+def test_a_transition_time_without_a_zone_is_utc_and_costs_nothing():
+    """Finding 4: a naive time raised TypeError against the aware cutoff and lost every finding."""
+    naive = _obj("naive", _err("401 Unauthorized", 600))
+    naive["status"]["conditions"][0]["lastTransitionTime"] = (NOW - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    _, _, stats, props = _run({"repoes": [naive, _obj("z", _err("401 Unauthorized", 600))]})
+    assert stats["ok"] and stats["stalled"] == 2 and len(props) == 1
+
+
+def test_a_configured_group_the_cluster_does_not_serve_is_a_note_not_a_failure():
+    """Finding 5: a provider not installed made every run PartiallyCompleted."""
+    class NotFound(Exception):
+        status = 404
+
+    def discover(group):
+        if group == "github.krateo.io":
+            raise NotFound("(404) Reason: Not Found")
+        return SERVED[group]
+    body, stats, props = S.gather(_Api(_outage(), CONFIGS), discover, now=NOW, groups=GROUPS, threshold_minutes=15)
+    assert stats["ok"] is True and "github.krateo.io is not served by this cluster" in stats["note"]
+    assert [p["subject"] for p in props] == ["git-provider/credential-rejected"]
+
+
+def test_a_configuration_that_cannot_be_read_leaves_the_secret_unnamed_and_the_source_ok():
+    """Finding 6: a convention that does not hold, or a reference with no namespace, is not a failure."""
+    api, _, stats, props = _run(_outage(n_repoes=0, n_lr=0), configs=[])   # every lookup raises KeyError
+    assert stats["ok"] is True and "error" not in stats
+    assert all("git-provider-credentials" not in p["rationale"] for p in props)
+    cluster_scoped = _obj("c", _err("401 Unauthorized", 600), spec={"configurationRef": {"name": "cfg"}}, ns="")
+    api, _, stats, _ = _run({"repositories": [cluster_scoped]})
+    assert stats["ok"] is True and not [r for r in api.reads if r[0] == "get"], "no namespace: no lookup"
+
+
+def test_a_service_finding_is_aimed_without_a_retarget_note_every_night(monkeypatch):
+    """Finding 8: a placeholder repo made aim() note a "retarget" on every run."""
+    monkeypatch.setattr(targets, "COMPONENTS", {"git-provider": {"repo": "o/git-provider", "pathPrefix": "docs"}})
+    _, _, _, props = _run(_outage())
+    assert all(p["target"]["repo"] == "" for p in props)
+    kept, notes = M._service_findings(props)
+    assert not any("retargeted" in n for n in notes)
+    assert [n for n in notes if "cleared" in n] == [
+        "Documentation proposal github-provider-kog-credential-rejected.md cleared: no destination configured "
+        "for component github-provider-kog; add it to config.destinations"]
