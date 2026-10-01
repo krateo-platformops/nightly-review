@@ -141,6 +141,43 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "nightly-review.fullname" . }}
     namespace: {{ .Release.Namespace }}
+{{- $syncGroups := list }}
+{{- range $group, $cfg := (dig "syncStall" "groups" dict .Values.config) }}
+{{- if $cfg }}
+{{- /* The core group is "" — and resources: ["*"] there would include Secrets. Refused, not rendered. */}}
+{{- if not (contains "." $group) }}
+{{- fail (printf "config.syncStall.groups: %q is not a Krateo API group (it must contain a dot)" $group) }}
+{{- end }}
+{{- $syncGroups = append $syncGroups $group }}
+{{- end }}
+{{- end }}
+{{- if $syncGroups }}
+---
+# CLUSTER-SCOPED, READ-ONLY, ON THE GROUPS config.syncStall NAMES AND NOTHING ELSE. The sync-stall check
+# lists every kind those groups serve — discovered at run time, which is why `resources` is "*" rather than
+# a list that would go stale the night a provider grows a kind — and reads the Configuration a failing
+# object's configurationRef names, to NAME the Secret it points at. No Secret is ever read: Secrets are in
+# the core group, which is not and cannot be in this rule (the template refuses a group without a dot).
+# Discovery itself needs no grant. Rendered only when at least one group is configured.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-sync-read
+rules:
+  - apiGroups: {{ toJson $syncGroups }}
+    resources: ["*"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-sync-read
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ include "nightly-review.fullname" . }}-sync-read }
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "nightly-review.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.portalAdminAccess.enabled }}
 ---
 # WHAT THE PORTAL'S ADMINS NEED TO ACT ON A PROPOSAL. Read both kinds, and PATCH THE PROPOSAL ITSELF:

@@ -86,9 +86,11 @@ def test_the_subject_does_not_change_the_fingerprint():
 
 class _Api:
     """Enough of CustomObjectsApi to drive open_index / create / supersede, recording every write."""
-    def __init__(self, proposals=(), alerts=(), agents=(), flexes=()):
+    def __init__(self, proposals=(), alerts=(), agents=(), flexes=(), cluster=None, configs=None):
         self.proposals = {p["metadata"]["name"]: p for p in proposals}
         self.alerts, self.agents, self.flexes = list(alerts), list(agents), list(flexes)
+        # The sync-stall check's reads: plural -> items, and (plural, name) -> a Configuration.
+        self.cluster, self.configs = cluster or {}, configs or {}
         self.status_writes, self.creates, self.spec_patches = [], [], []
 
     def list_namespaced_custom_object(self, group, version, ns, plural):
@@ -100,8 +102,10 @@ class _Api:
             return {"items": self.flexes}
         return {"items": []}
 
-    def list_cluster_custom_object(self, group, version, plural):
-        return {"items": self.agents}
+    def list_cluster_custom_object(self, group, version, plural, **kw):
+        if plural == "agents":
+            return {"items": self.agents}
+        return {"items": self.cluster.get(plural, [])}
 
     def create_namespaced_custom_object(self, group, version, ns, plural, body):
         self.creates.append((plural, body))
@@ -113,6 +117,8 @@ class _Api:
         self.spec_patches.append((plural, name, body))
 
     def get_namespaced_custom_object(self, group, version, ns, plural, name):
+        if plural != "proposals":
+            return self.configs[(plural, name)]
         return self.proposals[name]
 
     def patch_namespaced_custom_object_status(self, group, version, ns, plural, name, body):
@@ -408,7 +414,8 @@ def test_no_destination_is_hardcoded_in_the_code():
     import ast
     import io
     import tokenize
-    for name in ("targets.py", "main.py", "prompt.py", "analysis.py", "publish.py", "proposals.py"):
+    for name in ("targets.py", "main.py", "prompt.py", "analysis.py", "publish.py", "proposals.py",
+                 "sync_health.py"):
         src = (ROOT / name).read_text()
         doc_lines = set()
         for node in ast.walk(ast.parse(src)):
@@ -426,7 +433,7 @@ def test_no_destination_is_hardcoded_in_the_code():
 # live composition CR spec, so a `default` there is a silent live override, not documentation — the
 # installer's check-fill-defaults.py exists because one (frontend agentgateway.enabled) broke Autopilot
 # for every user. Its rule, mirrored: no `default` at ANY depth under these keys.
-NEW_SCHEMA_KEYS = ("targets", "targetCheck", "destinations")
+NEW_SCHEMA_KEYS = ("targets", "targetCheck", "destinations", "syncStall")
 
 
 def _defaults(node, path):
@@ -715,10 +722,13 @@ def full_run(monkeypatch):
     return _drive(monkeypatch)
 
 
-def _drive(monkeypatch):
+def _drive(monkeypatch, ask_fails=False):
     import datetime as dt
     import evidence as E
     import main as M
+    import sync_health as S
+
+    import test_sync_stall as T
 
     import analysis as AN
 
@@ -736,7 +746,11 @@ def _drive(monkeypatch):
                agents=[{"metadata": {"namespace": "krateo-system", "name": "never-used"}}, busy],
                flexes=[{"metadata": {"name": "page-dashboard",
                                      "annotations": {"krateo.io/nav-path": "/dashboard"}}},
-                       {"metadata": {"name": "dashboard-row-1"}}])
+                       {"metadata": {"name": "dashboard-row-1"}}],
+               # 2026-10-01's outage, read by the sync-stall check through discovery: two findings.
+               cluster=T._outage(ago=60 * 24 * 365), configs={(c[0], c[1]): c[2] for c in T.CONFIGS})
+    monkeypatch.setattr(S, "GROUPS", T.GROUPS)
+    monkeypatch.setattr(S, "discoverer", lambda client: T._discover)
     monkeypatch.setattr(M.config, "load_incluster_config", lambda: None)
     monkeypatch.setattr(M.client, "CustomObjectsApi", lambda: api)
     cm = types.SimpleNamespace(data={"busy": "You are busy. Always cite the tool you used."},
@@ -816,6 +830,8 @@ def _drive(monkeypatch):
     monkeypatch.setattr(M.autopilot, "service_jwt", lambda: None)
     def ask(system, message, run_name, token=None, context=None, timeout=None):
         asked.append((context, message))
+        if ask_fails and not context:
+            raise TimeoutError("the reviewer did not answer")
         if context:                                    # an analyse call
             return assessment, "{}", {"inputTokens": 40, "outputTokens": 5, "totalTokens": 45}
         return payload, "{}", A.token_usage({"metadata": {"kagent_usage_metadata": {
@@ -837,7 +853,7 @@ def _drive(monkeypatch):
         return types.SimpleNamespace(status_code=404 if "does-not-exist" in url else 200)
     monkeypatch.setattr(targets, "requests", types.SimpleNamespace(head=head))
 
-    assert M.main() == 0
+    assert M.main() == (1 if ask_fails else 0)
     api.asked, api.heads = asked, heads
     return api
 
@@ -874,7 +890,9 @@ def test_every_reviewrun_status_the_service_writes_is_declared(full_run):
 def test_every_proposal_the_service_writes_is_declared(full_run):
     schema = _crd_schema("proposal.crd.yaml")["properties"]
     created = [b for plural, b in full_run.creates if plural == "proposals"]
-    assert len(created) == 4
+    assert len(created) == 6, "four from the model, two from the sync-stall check"
+    assert sorted(b["spec"]["producedBy"]["agent"] for b in created) == ["krateo-autopilot"] * 4 + [
+        "nightly-review/sync-stall"] * 2
     for body in created:
         assert _undeclared(body["spec"], schema["spec"], "spec") == []
     statuses = [b["status"] for plural, _, b in full_run.status_writes if plural == "proposals"]
@@ -1006,3 +1024,43 @@ def test_the_check_token_reaches_nothing_but_the_check(monkeypatch, capsys):
     assert FAKE_TOKEN not in logs.out + logs.err
     # Mutation guard on the guard: the serialisations above did capture the run.
     assert "krateo-platformops/observability" in written and "agent-analysis" in asked
+
+
+# --- the sync-stall check inside a whole run -------------------------------------------------------
+
+def test_the_sync_stall_findings_are_recorded_and_told_to_the_model(full_run):
+    final = [b["status"] for plural, _, b in full_run.status_writes if plural == "reviewruns"][-1]
+    sh = final["evidence"]["sync-health"]
+    assert sh["ok"] and sh["stalled"] == 70 and sh["findings"] == 2 and sh["thresholdMinutes"] == 15
+    (main_msg,) = [m for ctx, m in full_run.asked if not ctx]
+    assert 'source="sync-health"' in main_msg and "subject git-provider/credential-rejected" in main_msg
+    subjects = {b["spec"].get("subject") for plural, b in full_run.creates if plural == "proposals"}
+    assert {"git-provider/credential-rejected", "github-provider-kog/credential-rejected"} <= subjects
+
+
+def test_the_sync_stall_findings_are_written_even_when_the_model_does_not_answer(monkeypatch):
+    """A backstop that died with the model would not be one: the outage night is exactly the night the
+    rest of the run may fail too."""
+    api = _drive(monkeypatch, ask_fails=True)
+    final = [b["status"] for plural, _, b in api.status_writes if plural == "reviewruns"][-1]
+    assert final["phase"] == "Failed" and final["proposals"]["created"] == 2
+    record = next(s for s in final["steps"] if s["name"] == "record")
+    assert record["phase"] == "Succeeded" and "sync-stall findings only" in record["message"]
+    created = [b for plural, b in api.creates if plural == "proposals"]
+    assert {b["spec"]["producedBy"]["agent"] for b in created} == {"nightly-review/sync-stall"}
+    assert not [b for plural, b in api.creates if plural == "builderpublishes"], "never published from here"
+    schema = _crd_schema("reviewrun.crd.yaml")["properties"]["status"]
+    for plural, _, b in api.status_writes:
+        if plural == "reviewruns":
+            assert _undeclared(b["status"], schema, "status") == []
+
+
+def test_the_chart_grants_the_sync_check_read_only_on_its_groups_and_never_the_core_group():
+    import re
+    rbac = (ROOT / "helm/nightly-review/templates/rbac.yaml").read_text()
+    block = rbac.split("-sync-read")[1].split("---")[0]
+    assert re.search(r'verbs: \["get", "list"\]', block) and "create" not in block and "patch" not in block
+    assert 'fail (printf "config.syncStall.groups' in rbac, "a group without a dot (the core group) must fail"
+    cron = (ROOT / "helm/nightly-review/templates/cronjob.yaml").read_text()
+    assert 'dig "syncStall" dict .Values.config' in cron and "name: SYNC_STALL_GROUPS" in cron
+    assert 'os.environ.get("SYNC_STALL_GROUPS")' in (ROOT / "sync_health.py").read_text()

@@ -88,6 +88,23 @@ spec:
                        records NoDestination) rather than fail on a nil map. */}}
                 - name: TARGET_COMPONENTS
                   value: {{ dig "destinations" "components" dict .Values.config | toJson | quote }}
+                {{- /* The sync-stall check (sync_health.py). dig, like destinations: no schema default fills
+                       config.syncStall, and an install without it renders with the check off. */}}
+                {{- $sync := dig "syncStall" dict .Values.config }}
+                - name: SYNC_STALL_GROUPS
+                  value: {{ $sync.groups | default dict | toJson | quote }}
+                {{- with $sync.thresholdMinutes }}
+                - name: SYNC_STALL_THRESHOLD_MINUTES
+                  value: {{ . | quote }}
+                {{- end }}
+                {{- with $sync.readyErrorReasons }}
+                - name: SYNC_STALL_READY_REASONS
+                  value: {{ join "," . | quote }}
+                {{- end }}
+                {{- with $sync.ignoreReasons }}
+                - name: SYNC_STALL_IGNORE_REASONS
+                  value: {{ join "," . | quote }}
+                {{- end }}
                 - name: EVIDENCE_MAX_CHARS
                   value: {{ .Values.config.evidenceMaxChars | quote }}
                 # A JSON blob so the queries stay reviewable as data.

@@ -198,9 +198,55 @@ pinned. A failed fetch fails the job. The failure lists what to add.
 | kagent sessions | session **metadata**, and the text of **user-authored** messages in the window, from kagent's Postgres, with a role granted SELECT on `session` and `event` (revoked on `task`) | reports which deployed agents are idle or never used, and what people asked, so a question asked again and again with no written answer becomes a Documentation proposal. All users; the run records `scope` saying so. Questions only, never agent replies or tool output; redacted before the prompt; capped per conversation and in total, with every cut recorded (`truncated`, `droppedMessages`, `droppedSessions`); no user ids. `shapes` counts how the stored events parsed, so an unreadable corpus fails the source instead of reading as a quiet night. The questions of agents the analysis read in full are folded to a pointer (`questionsFolded`) |
 | agent analysis | whole conversations of every agent with sessions in the window (same Postgres role; `event` already holds replies and tool output), and each agent's prompt from its `Agent` object | the only source that can say whether people were **served**, and why the prompt made it so. Read by a separate call per agent; the main review gets the assessment. See below |
 | existing Alerts and pages | Kubernetes API: Alerts, and page roots (Flex widgets named `page-*`; there is no Page kind), each read failing on its own | so it proposes gaps rather than duplicates |
+| resources out of sync | Kubernetes API: every kind discovered in `config.syncStall.groups`, cluster-wide, read-only; Configurations named by `configurationRef` | a counted check, not a judgement, so its findings are written as Proposals by the service itself. See [Resources out of sync](#resources-out-of-sync) |
 
 The review window is bounded, and that is a safety control rather than a cost one: spans ingested
 before the collector's JWT redaction landed can still carry live credentials.
+
+## Resources out of sync
+
+`sync_health.py`, run in the `gather` stage. On 2026-10-01 the GitHub token in
+`krateo-system/git-provider-credentials` expired. Every github.krateo.io Repository and PullRequest and every
+git.krateo.io Repo and LocalResource went `Synced=False` with a 401 and stayed there for hours (0 of 24
+Repositories synced), and nothing reported it. Someone noticed only because a publish stalled. An expired,
+revoked or re-scoped token and a deleted repository all show up the same way.
+
+- **What it checks.** Every kind the API serves in `config.syncStall.groups`, found by **discovery** at run
+  time, so a provider that adds a kind is covered from the next run on. A group's `kinds` can narrow the
+  list. An object counts when its `Synced` condition is False, or when it has no `Synced` verdict and its
+  `Ready` is False for one of `readyErrorReasons` (`ReconcileError`), and it has been that way for longer
+  than `thresholdMinutes` (15), going by the condition's own `lastTransitionTime`. `Synced=True` always
+  wins: an old or odd-looking `Ready` beside it is not reported. `ignoreReasons` (`ReconcilePaused`)
+  covers states someone set on purpose.
+- **What it reports.** Objects are grouped by the group's `component` and by what the message says went
+  wrong: credential rejected (401), permission denied (403), rate limited, remote not found (404), request
+  rejected (422), unreachable. Any other message is named by its first clause, with paths, quoted names and
+  numbers removed. Each group becomes **one Documentation Proposal** under `<component>/<pattern>`, e.g.
+  `git-provider/credential-rejected`. It lands where `config.destinations.components` puts that component,
+  carries `producedBy.agent: nightly-review/sync-stall` and is `high` confidence because it is a count,
+  not an opinion. It goes through the same boundary as the model's proposals (item schema, `redact()`,
+  subject, fingerprint). Its body leaves out anything that changes over time without the outage changing,
+  so an outage still running the next night deduplicates, and a changed outage supersedes under the same
+  subject.
+- **It does not wait for the model.** The findings are validated right after the gather and are written
+  even when the ask or the validation fails. In that case the run is still `Failed`, and its `record` step
+  says "sync-stall findings only". The model sees them too, as the `sync-health` evidence, and is told they
+  are already proposed.
+- **Secrets are named, never read.** A credential is identified by its reference: a `{name, key}` under a
+  `*Ref` key in the failing object's spec (git-provider's `secretRef`/`usernameRef`), or in the spec of the
+  Configuration its `configurationRef` names (KOG's `authentication.bearer.tokenRef`). The Configuration is
+  read with the same grant; the Secret is not. For the same reason there is **no token-expiry probe**:
+  every way of checking a token before it is rejected starts by reading it.
+- **On the ReviewRun:** `status.evidence.sync-health`: `stalled`, `freshFailures` (failing for less than
+  the threshold, which are not reported), `findings` and `thresholdMinutes`.
+- **One blind spot.** provider-runtime restamps `lastTransitionTime` whenever a condition's *message*
+  changes, so a failure whose message changes on every reconcile looks permanently fresh. It is counted
+  in `freshFailures` and listed in the corpus, so it does not go unseen.
+- **RBAC:** the `-sync-read` ClusterRole grants `get`/`list` on `resources: ["*"]`, but only in the
+  configured groups. The template refuses any group without a dot, so the core group, and with it Secrets,
+  can never be named. Discovery needs no grant.
+- **It is a backstop, not an alert.** It runs nightly, so it reports a stall up to a day after it starts.
+  An in-cluster alert on these conditions would catch it in minutes.
 
 ## What the agents did
 
@@ -279,7 +325,8 @@ schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
 `config.targetCheckApiUrl` (empty disables the existence check), `config.targetCheck.tokenSecret`
 (the credential for it; empty name = anonymous), `config.targets` (destinations per kind, which win), `config.destinations.components` (destinations
 per subject component; see *Where proposals land*), `config.agentAnalysis` (the per-agent
-conversation budget; `maxAgents: 0` turns the stage off), `portalAdminAccess`, and `decisionPolicy`.
+conversation budget; `maxAgents: 0` turns the stage off), `config.syncStall` (the out-of-sync check; an
+empty `groups` turns it off), `portalAdminAccess`, and `decisionPolicy`.
 
 Releases are cut by tag: `Chart.yaml` ships `CHART_VERSION`, and a `X.Y.Z` tag builds the image and
 publishes both charts at that version.

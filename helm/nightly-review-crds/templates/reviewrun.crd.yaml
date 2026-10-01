@@ -48,7 +48,7 @@ spec:
                 sources:
                   type: array
                   description: Evidence sources this run was asked to read.
-                  items: { type: string, enum: [clickhouse, kagent-sessions, kubernetes, agent-analysis] }
+                  items: { type: string, enum: [clickhouse, kagent-sessions, kubernetes, agent-analysis, sync-health] }
                 dryRun:
                   type: boolean
                   default: false
@@ -175,6 +175,25 @@ spec:
                           by one pointer line per agent. The truncation fields beside it describe what was
                           actually sent after that fold. Agents the analysis did not cover keep their
                           questions here.
+                      stalled:
+                        type: integer
+                        description: >-
+                          sync-health only. Objects in config.syncStall.groups whose Synced condition (or,
+                          with no Synced verdict, Ready for a reconcile-error reason) has been False for
+                          longer than thresholdMinutes, by the condition's own lastTransitionTime. Counted
+                          by the service; each group of them is written as a Proposal.
+                      freshFailures:
+                        type: integer
+                        description: >-
+                          sync-health only. Objects failing for LESS than the threshold, not reported. A
+                          condition whose message changes every reconcile restamps its lastTransitionTime
+                          and stays here forever, so a large number is worth a look on its own.
+                      findings:
+                        type: integer
+                        description: sync-health only. Groups (provider component x failure pattern) written as Proposals.
+                      thresholdMinutes:
+                        type: integer
+                        description: sync-health only. The threshold in force for this run.
                       corpusDroppedChars:
                         type: integer
                         description: >-

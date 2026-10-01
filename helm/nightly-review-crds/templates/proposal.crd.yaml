@@ -113,7 +113,10 @@ spec:
                     for attention, not as evidence that attention is warranted; the evidence entries
                     and the queries recorded on the run are what a reviewer should actually read.
                     Deriving this from what the sources returned would describe the RUN, not the
-                    proposal, and would be the same value for every proposal in a night.
+                    proposal, and would be the same value for every proposal in a night. The one
+                    exception is a proposal whose producedBy.agent is nightly-review/sync-stall: it
+                    was counted by the service from resource conditions, not judged, and is always
+                    `high` because the count is what it reports.
                 target:
                   type: object
                   required: [repo]
@@ -142,7 +145,12 @@ spec:
                   required: [runRef]
                   properties:
                     runRef: { type: string, description: "Name of the ReviewRun. A REFERENCE, never an ownerReference." }
-                    agent:  { type: string }
+                    agent:
+                      type: string
+                      description: >-
+                        Who produced the finding: the reviewer model (krateo-autopilot), or
+                        nightly-review/sync-stall for a finding the service COUNTED from resource
+                        conditions with no model involved.
                     model:  { type: string }
                 decision:
                   type: object

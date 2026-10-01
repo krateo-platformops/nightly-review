@@ -20,6 +20,7 @@ import evidence
 import prompt
 import proposals as P
 import publish
+import sync_health
 import targets
 
 GROUP, VERSION = "review.krateo.io", "v1alpha1"
@@ -88,7 +89,8 @@ def main():
     api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "reviewruns", {
         "apiVersion": f"{GROUP}/{VERSION}", "kind": "ReviewRun",
         "metadata": {"name": run_name, "namespace": NAMESPACE},
-        "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes", "agent-analysis"],
+        "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes", "agent-analysis",
+                                                 sync_health.SOURCE],
                  "dryRun": DRY_RUN},
     })
     # PEOPLE'S DECISIONS FIRST, AND ON EVERY RUN — before the gather, so a night whose ask or validation
@@ -121,6 +123,19 @@ def main():
         if body:
             blocks[name] = body
 
+    # THE SERVICE'S OWN FINDINGS: resources out of sync past the threshold (sync_health.py). Counted, not
+    # judged, so they do not wait for the model — validated, redacted and aimed here, through the same
+    # boundary as the model's proposals, and WRITTEN EVEN WHEN THE ASK FAILS. 2026-10-01's expired token
+    # went unreported for hours; a backstop that also died whenever the model did would not have been one.
+    try:
+        sbody, sstats, sprops = sync_health.gather(api, sync_health.discoverer(client.ApiClient()))
+    except Exception as exc:                                  # noqa: BLE001
+        sbody, sstats, sprops = None, {"ok": False, "error": P.redact(f"{type(exc).__name__}: {exc}")[:300]}, []
+    st["evidence"][sync_health.SOURCE] = sstats
+    if sbody:
+        blocks[sync_health.SOURCE] = sbody
+    service, service_notes = _service_findings(sprops)
+
     if not blocks:
         # Nothing answered. This is a FAILED run, not an uneventful one — the distinction matters
         # because "no proposals" from a healthy night and "no proposals" from a blind one look
@@ -128,6 +143,7 @@ def main():
         steps.end("gather", "Failed", "no evidence source answered")
         st |= {"phase": "Failed", "finishedAt": _now().isoformat(),
                "error": "no evidence source answered; nothing was reviewed"}
+        _record_service_only(api, run_name, st, steps, service)
         _patch(api, run_name, st)
         print("[run] no evidence; failed", flush=True)
         return 1
@@ -236,6 +252,7 @@ def main():
         if excerpt:
             st["conditions"] = [{"type": "AgentResponse", "status": "False", "reason": "Unusable",
                                  "message": excerpt, "lastTransitionTime": _now().isoformat()}]
+        _record_service_only(api, run_name, st, steps, service)
         _patch(api, run_name, st)
         print(f"[run] agent/validation failed: {exc}", flush=True)
         if excerpt:
@@ -260,37 +277,17 @@ def main():
         if moved:
             notes.append(moved)
             prop["fingerprint"] = P.fingerprint(prop)
+    # The service's own findings were aimed when they were validated, after the gather.
+    notes += service_notes
+    model_count = len(kept)
+    kept = kept + service
 
-    # Decided per proposal, BEFORE anything is written: which are duplicates, which replace an open
-    # one, and whether the repository each names exists. The existence check lives in validate because
-    # it is a fact about the proposal, not about publishing — a dry run needs it as much as a live one.
-    decided = {}
-    by_fingerprint, by_target, by_subject = publish.open_index(api, run_name, decided=decided)
-    plan, deduped, answered, resolved = [], 0, 0, {}
-    for prop in kept:
-        # FOUR OUTCOMES. Identical to something already open is a duplicate; identical to something a
-        # person already answered is left alone; the same finding (kind + subject) or the same file
-        # with a different body is a replacement, and saying so is what `superseded` meant.
-        action, priors = P.classify(prop, by_fingerprint, by_target, by_subject, decided=decided)
-        if action == "dedup":
-            deduped += 1
-            continue
-        if action == "decided":
-            # Not counted as deduplicated: the ReviewRun declares that as "an OPEN proposal already
-            # carried the fingerprint", and this one is closed. The step message carries the count.
-            answered += 1
-            continue
-        # No destination is not a question for GitHub: there is no repository to ask about, and the
-        # condition says which value is missing. False, so the publish loop below gives it no claim.
-        target_cond = (targets.resolve(prop["target"]["repo"], cache=resolved) if prop["target"].get("repo")
-                       else targets.no_destination(prop))
-        plan.append((prop, priors if action == "supersede" else [], target_cond))
-        # Forgotten as soon as they are claimed, so a second proposal in this run with the same subject
-        # does not supersede the same prior again and count it twice.
-        for name in (priors if action == "supersede" else []):
-            publish.forget(name, by_target, by_subject)
+    # Decided per proposal, BEFORE anything is written; see _plan.
+    plan, deduped, answered = _plan(api, run_name, kept)
     unresolved = sum(1 for _, _, c in plan if c["status"] == "False")
-    steps.end("validate", message=f"{len(kept)} valid, {deduped} duplicate, {answered} already decided, "
+    steps.end("validate", message=f"{model_count} valid"
+                                  + (f" + {len(service)} from the sync-stall check" if service else "")
+                                  + f", {deduped} duplicate, {answered} already decided, "
                                   f"{unresolved} unresolved target(s)"
                                   + (f", {len(notes)} note(s)" if notes else ""))
 
@@ -330,16 +327,7 @@ def main():
                   f"{len(claims) - failed} claim(s), {failed} failed" if claims else "nothing to publish")
 
     steps.start("record")
-    created, superseded, refs = 0, 0, []
-    for prop, priors, target_cond in plan:
-        name = publish.proposal_name(prop)
-        for prior in priors:
-            publish.mark_superseded(api, prior, by=name, reason=f"superseded by {name} in {run_name}")
-            superseded += 1
-        claim, err = claims.get(prop["fingerprint"], (None, None))
-        refs.append(publish.create_proposal_cr(api, prop, run_name, claim=claim, error=err,
-                                               conditions=[target_cond]))
-        created += 1
+    created, superseded, refs = _record(api, run_name, plan, claims, service)
     steps.end("record", message=f"{created} written, {superseded} superseded")
 
     st |= {
@@ -361,6 +349,93 @@ def main():
     print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, {answered} already decided, "
           f"{superseded} superseded, {unresolved} unresolved target(s), degraded={degraded}", flush=True)
     return 0
+
+
+def _service_findings(props):
+    """The sync-stall check's proposals through the SAME boundary as the model's — the contract's item
+    schema, redaction, subject normalisation, fingerprint — then aimed by the values like any other.
+    (kept, notes). Their strings come from controller messages, which quote remote APIs: as untrusted as
+    anything else in the corpus."""
+    if not props:
+        return [], []
+    kept, notes = P.validate_batch({"proposals": props},
+                                   lambda p: jsonschema.validate(p, prompt.RESPONSE_SCHEMA),
+                                   item_check=lambda p: jsonschema.validate(p, prompt.ITEM_SCHEMA))
+    notes = [f"sync-stall {n}" for n in notes]
+    for prop in kept:
+        moved = targets.aim(prop)
+        if moved:
+            notes.append(moved)
+        prop["fingerprint"] = P.fingerprint(prop)
+    return kept, notes
+
+
+def _plan(api, run_name, kept):
+    """(plan, deduped, answered): per proposal, BEFORE anything is written — which are duplicates, which
+    replace an open one, and whether the repository each names exists. The existence check lives here
+    because it is a fact about the proposal, not about publishing — a dry run needs it as much as a live one."""
+    decided = {}
+    by_fingerprint, by_target, by_subject = publish.open_index(api, run_name, decided=decided)
+    plan, deduped, answered, resolved = [], 0, 0, {}
+    for prop in kept:
+        # FOUR OUTCOMES. Identical to something already open is a duplicate; identical to something a
+        # person already answered is left alone; the same finding (kind + subject) or the same file
+        # with a different body is a replacement, and saying so is what `superseded` meant.
+        action, priors = P.classify(prop, by_fingerprint, by_target, by_subject, decided=decided)
+        if action == "dedup":
+            deduped += 1
+            continue
+        if action == "decided":
+            # Not counted as deduplicated: the ReviewRun declares that as "an OPEN proposal already
+            # carried the fingerprint", and this one is closed. The step message carries the count.
+            answered += 1
+            continue
+        # No destination is not a question for GitHub: there is no repository to ask about, and the
+        # condition says which value is missing. False, so the publish loop gives it no claim.
+        target_cond = (targets.resolve(prop["target"]["repo"], cache=resolved) if prop["target"].get("repo")
+                       else targets.no_destination(prop))
+        plan.append((prop, priors if action == "supersede" else [], target_cond))
+        # Forgotten as soon as they are claimed, so a second proposal in this run with the same subject
+        # does not supersede the same prior again and count it twice.
+        for name in (priors if action == "supersede" else []):
+            publish.forget(name, by_target, by_subject)
+    return plan, deduped, answered
+
+
+def _record(api, run_name, plan, claims, service=()):
+    """(created, superseded, refs). A proposal from the sync-stall check says so in producedBy.agent: it was
+    counted by the service, and a reader weighing it should not think a model judged it."""
+    service_fps = {p["fingerprint"] for p in service}
+    created, superseded, refs = 0, 0, []
+    for prop, priors, target_cond in plan:
+        name = publish.proposal_name(prop)
+        for prior in priors:
+            publish.mark_superseded(api, prior, by=name, reason=f"superseded by {name} in {run_name}")
+            superseded += 1
+        claim, err = claims.get(prop["fingerprint"], (None, None))
+        refs.append(publish.create_proposal_cr(
+            api, prop, run_name, claim=claim, error=err, conditions=[target_cond],
+            agent=sync_health.AGENT if prop["fingerprint"] in service_fps else None))
+        created += 1
+    return created, superseded, refs
+
+
+def _record_service_only(api, run_name, st, steps, service):
+    """A run that fails before its own record step still writes the sync-stall findings: they never
+    depended on the model, and a credential outage is exactly the night the rest may fail too. Never
+    published — publishing is the record step's, and this run did not reach it. A failure here is logged
+    and leaves the run's own failure as the story."""
+    if not service:
+        return
+    steps.start("record")
+    try:
+        plan, deduped, _ = _plan(api, run_name, service)
+        created, superseded, refs = _record(api, run_name, plan, {}, service)
+        st["proposals"] = {"created": created, "deduplicated": deduped, "superseded": superseded, "refs": refs}
+        steps.end("record", message=f"sync-stall findings only: {created} written, {superseded} superseded")
+    except Exception as exc:                                  # noqa: BLE001
+        steps.end("record", "Failed", f"sync-stall findings: {type(exc).__name__}: {exc}")
+        print(f"[run] could not record the sync-stall findings: {exc}", flush=True)
 
 
 def _usage(calls):
