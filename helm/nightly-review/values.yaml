@@ -231,6 +231,10 @@ config:
       installer:           { repo: krateo-platformops/installer, pathPrefix: docs }
       krateo-helm-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
       helm-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
+      # The installer's 2026-10 rename: same image (ghcr.io/krateo-platformops/helm-render-service), chart and
+      # component now blueprint-render-service. The old key above stays: drift does not require the map to equal
+      # the pins, and past subjects and log ServiceNames still spell it krateo-helm-render-service.
+      blueprint-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
       krateo-sse-proxy:    { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
       sse-proxy:           { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
       krateo-alert-troubleshooter: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
