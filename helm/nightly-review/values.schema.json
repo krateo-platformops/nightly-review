@@ -357,6 +357,60 @@
             ],
             "promptConfigMaps": []
           }
+        },
+        "syncStall": {
+          "type": "object",
+          "additionalProperties": false,
+          "title": "Resources out of sync for too long",
+          "description": "A deterministic check (no model): every kind the API serves in `groups` is listed (discovered at run time), and objects whose Synced condition is False (or, with no Synced verdict, Ready False for one of readyErrorReasons) for longer than thresholdMinutes by the condition's lastTransitionTime are grouped by component and failure pattern; each group is written as one Documentation Proposal under `<component>/<pattern>`, even when the model call fails. Secrets are named from *Ref fields, never read. A NIGHTLY BACKSTOP, not an alert. NO SCHEMA DEFAULT at any depth, deliberately: core-provider applies schema defaults into the live composition spec; values.yaml sets github.krateo.io and git.krateo.io. Absent or empty `groups` turns the check off.",
+          "properties": {
+            "thresholdMinutes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "How long a condition must have been failing, by its lastTransitionTime, before it is reported."
+            },
+            "groups": {
+              "type": "object",
+              "description": "API group -> {component, kinds}. Helm merges maps: drop a seeded group with `<group>: null`.",
+              "propertyNames": {
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+              },
+              "additionalProperties": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "component": {
+                    "type": "string",
+                    "description": "The subject's component for this group's findings, spelled as config.destinations.components spells it, so the Proposal lands in that component's repository."
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Kinds to check; empty checks every kind the group serves."
+                  }
+                }
+              }
+            },
+            "readyErrorReasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ready=False reasons that count as failing when there is no Synced verdict."
+            },
+            "ignoreReasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Synced=False reasons that are intent, not failure (a paused reconcile)."
+            }
+          }
         }
       }
     },

@@ -143,6 +143,12 @@ Cite it as source "agent-analysis", with observedCount set to the count the anal
 component is the agent's name as the analysis spells it without its namespace (k8s-agent), and its signal
 the pattern (misroute-helm-release-questions), so the same failure tomorrow is the same finding.
 
+RESOURCES OUT OF SYNC. The sync-health evidence lists Krateo-managed resources whose Synced condition has
+been False past a threshold, grouped by component and failure pattern. It was COUNTED by this service, and
+each group listed there has ALREADY been written as a Proposal under the subject shown. Do not propose
+those again. Use them as context: an error pattern elsewhere in the evidence that the same outage
+explains is that outage, not a separate finding.
+
 Be specific rather than numerous, but do not mistake brevity for rigour: if the evidence supports six
 findings, return six. If two proposals would touch two repositories, split them. Never propose a change
 you cannot point at evidence for — and never withhold one you can.

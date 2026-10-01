@@ -241,7 +241,9 @@ def proposal_name(proposal):
 
 
 def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED, error=None,
-                       conditions=None):
+                       conditions=None, agent=None):
+    """`agent` is who produced the finding, for producedBy.agent: the model by default; the sync-stall check
+    names itself, because a counted finding and a judged one should not read alike."""
     obj = {
         "apiVersion": f"{GROUP}/{VERSION}", "kind": "Proposal",
         "metadata": {
@@ -264,7 +266,7 @@ def create_proposal_cr(api, proposal, run_name, claim=None, phase=PHASE_PROPOSED
         "spec": {k: proposal[k] for k in
                  ("kind", "subject", "title", "rationale", "evidence", "confidence", "target", "change",
                   "fingerprint") if proposal.get(k) is not None}
-                | {"producedBy": {"runRef": run_name, "agent": "krateo-autopilot"}},
+                | {"producedBy": {"runRef": run_name, "agent": agent or "krateo-autopilot"}},
     }
     try:
         created = api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "proposals", obj)

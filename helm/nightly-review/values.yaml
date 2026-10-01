@@ -231,6 +231,10 @@ config:
       installer:           { repo: krateo-platformops/installer, pathPrefix: docs }
       krateo-helm-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
       helm-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
+      # The installer's 2026-10 rename: same image (ghcr.io/krateo-platformops/helm-render-service), chart and
+      # component now blueprint-render-service. The old key above stays: drift does not require the map to equal
+      # the pins, and past subjects and log ServiceNames still spell it krateo-helm-render-service.
+      blueprint-render-service: { repo: krateo-platformops/helm-render-service, pathPrefix: docs }
       krateo-sse-proxy:    { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
       sse-proxy:           { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
       krateo-alert-troubleshooter: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
@@ -264,6 +268,32 @@ config:
       # --- blueprints (krateo-blueprints) -----------------------------------------------------------------
       github-provider-kog: { repo: krateo-blueprints/github-provider-kog, pathPrefix: docs }
       krateo-marketplace-catalog: { repo: krateo-blueprints/marketplace, pathPrefix: krateo-marketplace-catalog }
+
+  # RESOURCES OUT OF SYNC FOR TOO LONG. A deterministic check, no model: every kind the API serves in these
+  # groups (discovered at run time — a provider that grows a kind is covered the night it ships) is listed,
+  # and objects whose Synced condition has been False (or, with no Synced verdict, Ready False for one of
+  # readyErrorReasons) for longer than thresholdMinutes — by the condition's own lastTransitionTime — are
+  # grouped by component and by what the message says ("401 Unauthorized x24 — credential rejected"). Each
+  # group is written as one Documentation Proposal under `<component>/<pattern>`, landing where
+  # config.destinations says for that component, and is written even on a night the model call fails.
+  # Secrets are NAMED from the objects' and their Configurations' *Ref fields, never read.
+  # It runs NIGHTLY, so it is a backstop, not an alert: 2026-10-01's expired git-provider token
+  # (krateo-system/git-provider-credentials; 0 of 24 Repositories synced for hours, unnoticed) would still
+  # have been reported up to a day late. Catching that in minutes is an in-cluster alert's job.
+  # group -> {component, kinds}. `component` names the subject's component, so it must be spelled as
+  # config.destinations.components spells it; `kinds` narrows the check to those Kinds (empty = every kind
+  # discovered). Helm merges maps: add a group by setting it, drop one with `<group>: null`; an empty map
+  # turns the check off. RBAC: get/list on every resource of these groups, cluster-wide (templates/rbac.yaml).
+  syncStall:
+    thresholdMinutes: 15
+    groups:
+      github.krateo.io: { component: github-provider-kog, kinds: [] }
+      git.krateo.io:    { component: git-provider, kinds: [] }
+    # Ready=False counts only for these reasons, and only without a Synced verdict: Ready is also False
+    # while an object is being created or deleted, which is progress, not a stall.
+    readyErrorReasons: [ReconcileError]
+    # Synced=False that is intent, not failure.
+    ignoreReasons: [ReconcilePaused]
 
 # Credentials are referenced, never inlined.
 secrets:
