@@ -17,6 +17,7 @@ import analysis
 import autopilot
 import coverage
 import evidence
+import failures
 import prompt
 import proposals as P
 import publish
@@ -27,6 +28,12 @@ GROUP, VERSION = "review.krateo.io", "v1alpha1"
 NAMESPACE = os.environ.get("NAMESPACE", "krateo-system")
 WINDOW_HOURS = int(os.environ.get("WINDOW_HOURS", "24"))
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+# The Job's own deadline (jobDeadlineSeconds): a ReviewRun still Running and younger than this is a run in
+# progress; an older one was killed past its SIGTERM handler and is not.
+JOB_DEADLINE_SECONDS = int(os.environ.get("JOB_DEADLINE_SECONDS") or "3600")
+# The Job this pod belongs to (the downward API's batch.kubernetes.io/job-name label), so the portal can find
+# the ReviewRun a "Run review now" Job produced. Empty outside a Job.
+JOB_NAME = os.environ.get("JOB_NAME", "")
 
 
 def _now():
@@ -84,15 +91,18 @@ def main():
     to = _now()
     frm = to - dt.timedelta(hours=WINDOW_HOURS)
     window = {"from": frm.isoformat(), "to": to.isoformat()}
-    run_name = f"rr-{to.strftime('%Y%m%d-%H%M')}"
-
-    api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "reviewruns", {
-        "apiVersion": f"{GROUP}/{VERSION}", "kind": "ReviewRun",
-        "metadata": {"name": run_name, "namespace": NAMESPACE},
-        "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes", "agent-analysis",
-                                                 sync_health.SOURCE],
-                 "dryRun": DRY_RUN},
-    })
+    busy = _run_in_progress(api, to)
+    run_name = _create_run(api, to, window)
+    if busy:
+        # A "Run review now" Job while another review is still running, or the night's schedule firing during
+        # a manual one. The CronJob's concurrencyPolicy: Forbid only governs the Jobs the CronJob itself
+        # creates, so a Job made from it by hand is not held back by it — this is what is. Recorded as a run
+        # of its own, so the person who pressed the button sees why nothing happened.
+        _patch(api, run_name, {"phase": "Failed", "startedAt": to.isoformat(), "finishedAt": _now().isoformat(),
+                               "error": f"not run: review {busy} was still running; two reviews at once would "
+                                        f"read the same window and write the same proposals twice"})
+        print(f"[run] {busy} is still running; {run_name} recorded as not run", flush=True)
+        return 0
     # PEOPLE'S DECISIONS FIRST, AND ON EVERY RUN — before the gather, so a night whose ask or validation
     # fails still brings status up to date. The portal records a decision in spec.decision and this
     # copies it onto status. open_index reads spec.decision as authoritative anyway, so a failure here
@@ -122,6 +132,23 @@ def main():
         st["evidence"][name] = stats
         if body:
             blocks[name] = body
+
+    # THE DAY'S REAL FAILURES: the Incidents of the window, and the Compositions that were not healthy in it.
+    # Read from the apiserver, not ranked by log volume, and placed first in the prompt (prompt.py). The
+    # compositions read also yields each blueprint's source repository, from its CompositionDefinition, for
+    # targets to aim a proposal about that blueprint at.
+    for name, read in ((failures.INCIDENTS_SOURCE, lambda: failures.incidents(api, window) + ({},)),
+                       (failures.COMPOSITIONS_SOURCE, lambda: failures.compositions(
+                           api, sync_health.discoverer(client.ApiClient()), window, orgs=targets.blueprint_orgs()))):
+        try:
+            body, stats, found = read()
+        except Exception as exc:                              # noqa: BLE001
+            body, stats, found = None, {"ok": False, "error": P.redact(f"{type(exc).__name__}: {exc}")[:300]}, {}
+        st["evidence"][name] = stats
+        if body:
+            blocks[name] = body
+        if found:
+            targets.register_blueprints(found)
 
     # THE SERVICE'S OWN FINDINGS: resources out of sync past the threshold (sync_health.py). Counted, not
     # judged, so they do not wait for the model — validated, redacted and aimed here, through the same
@@ -223,7 +250,7 @@ def main():
         payload, raw, usage = autopilot.ask(
             prompt.SYSTEM, prompt.build_user_message(window, blocks, coverage=cov["sentence"],
                                                      destinations=targets.DESTINATIONS,
-                                                     components=targets.COMPONENTS),
+                                                     components={**targets.BLUEPRINTS, **targets.COMPONENTS}),
             run_name, token)
         steps.end("ask")
         # THE MODEL FIELD IS WRITTEN ONLY WHEN THE AGENT REPORTED USAGE. It was written unconditionally
@@ -357,6 +384,51 @@ def main():
     print(f"[run] {st['phase']}: {created} proposed, {deduped} deduped, {answered} already decided, "
           f"{superseded} superseded, {unresolved} unresolved target(s), degraded={degraded}", flush=True)
     return 0
+
+
+def _run_in_progress(api, now):
+    """The name of a ReviewRun still Running and younger than the Job's deadline, or None. Best effort: a
+    list that fails must not stop the night's review, so it answers None and the run goes ahead."""
+    try:
+        runs = api.list_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "reviewruns").get("items") or []
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[run] could not list ReviewRuns to check for one in progress: {exc}", flush=True)
+        return None
+    for r in runs:
+        st = r.get("status") or {}
+        started = sync_health._parse(st.get("startedAt"))
+        if st.get("phase") == "Running" and started and (now - started).total_seconds() < JOB_DEADLINE_SECONDS:
+            return (r.get("metadata") or {}).get("name")
+    return None
+
+
+def _create_run(api, start, window):
+    """Create this run's ReviewRun and return its name: rr-YYYYMMDD-HHMM from the ACTUAL start time.
+
+    The nightly schedule makes rr-…-0200; a run started by hand at 10:37 makes rr-…-1037, so the two never
+    share a name. Two started inside the same minute would, and the second must not fail on a 409 before
+    it has reviewed anything — it takes the seconds as well, rr-YYYYMMDD-HHMMSS."""
+    labels = {"review.krateo.io/job": JOB_NAME} if JOB_NAME and len(JOB_NAME) <= 63 else {}
+    for fmt in ("%Y%m%d-%H%M", "%Y%m%d-%H%M%S"):
+        name = f"rr-{start.strftime(fmt)}"
+        meta = {"name": name, "namespace": NAMESPACE}
+        if labels:
+            meta["labels"] = labels
+        try:
+            api.create_namespaced_custom_object(GROUP, VERSION, NAMESPACE, "reviewruns", {
+                "apiVersion": f"{GROUP}/{VERSION}", "kind": "ReviewRun", "metadata": meta,
+                # incidents and compositions are NOT listed: spec.sources is an enum in the CRD, and an
+                # image rolled ahead of its CRDs would have every run refused at creation. status.evidence
+                # records them, which is where a reader looks for what answered.
+                "spec": {"window": window, "sources": ["clickhouse", "kagent-sessions", "kubernetes",
+                                                         "agent-analysis", sync_health.SOURCE],
+                         "dryRun": DRY_RUN},
+            })
+            return name
+        except client.ApiException as exc:
+            if exc.status != 409 or fmt.endswith("%S"):
+                raise
+    raise RuntimeError("unreachable")
 
 
 def _service_findings(props):

@@ -40,6 +40,15 @@ spec:
                   value: {{ .Values.dryRun | quote }}
                 - name: RUN_RETENTION_DAYS
                   value: {{ .Values.retention.runDays | quote }}
+                # A ReviewRun Running for less than this is a run in progress: a Job started by hand while
+                # one is (or the schedule firing during a manual one) records itself as not run.
+                - name: JOB_DEADLINE_SECONDS
+                  value: {{ .Values.jobDeadlineSeconds | quote }}
+                # Labelled onto the ReviewRun (review.krateo.io/job), so the portal's "Run review now" can
+                # find the run its Job produced. The Job controller sets this label on every Job's pods.
+                - name: JOB_NAME
+                  valueFrom:
+                    fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" }
                 # ORDER MATTERS, AND NOT IN THE OBVIOUS WAY. An explicit reviewerA2aUrl always wins.
                 # Otherwise a reviewer this chart CREATES beats the deprecated alias — because the
                 # existing release sets that alias to `autopilot`, and honouring it first would leave
@@ -88,6 +97,10 @@ spec:
                        records NoDestination) rather than fail on a nil map. */}}
                 - name: TARGET_COMPONENTS
                   value: {{ dig "destinations" "components" dict .Values.config | toJson | quote }}
+                {{- /* Which orgs a blueprint's source repository may be derived in. dig like the rest: absent
+                       renders, and derives nothing. */}}
+                - name: TARGET_BLUEPRINTS
+                  value: {{ dig "destinations" "blueprints" dict .Values.config | toJson | quote }}
                 {{- /* The sync-stall check (sync_health.py). dig, like destinations: no schema default fills
                        config.syncStall, and an install without it renders with the check off. */}}
                 {{- $sync := dig "syncStall" dict .Values.config }}

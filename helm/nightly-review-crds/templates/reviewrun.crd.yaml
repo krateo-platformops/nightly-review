@@ -190,7 +190,25 @@ spec:
                           and stays here forever, so a large number is worth a look on its own.
                       findings:
                         type: integer
-                        description: sync-health only. Groups (provider component x failure pattern) written as Proposals.
+                        description: >-
+                          sync-health: groups (provider component x failure pattern) written as Proposals.
+                          incidents: Incidents opened, fired, analysed or ended in the window. compositions:
+                          compositions listed (failing now plus recovered in the window).
+                      failing:
+                        type: integer
+                        description: compositions only. Compositions whose Ready or Synced condition is not True now.
+                      warningEvents:
+                        type: integer
+                        description: >-
+                          compositions only. Warning events on composition.krateo.io objects in the window, read
+                          from ClickHouse (k8s-events rows; the Events API keeps them for about an hour).
+                      recovered:
+                        type: integer
+                        description: >-
+                          compositions only. Compositions Synced now that received Warning events in the window
+                          (refused, then recovered), plus those created before the window whose Ready=True was
+                          stamped inside it. A chart upgrade's rollout stamps Ready the same, so the second kind
+                          is an upper bound on recoveries from a failure.
                       thresholdMinutes:
                         type: integer
                         description: sync-health only. The threshold in force for this run.

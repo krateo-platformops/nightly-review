@@ -161,7 +161,7 @@
           "type": "object",
           "additionalProperties": false,
           "title": "Where proposals land, per component",
-          "description": "THE ONLY SOURCE OF A PROPOSAL'S DESTINATION besides config.targets: the model's target.repo is never used. `components` maps a subject's component (the `component/` half, normalised like a subject: lowercase kebab) to {repo, pathPrefix, prompt}. A proposal about a listed component lands in `repo` under `pathPrefix`, keeping the model's file name; a Prompt proposal lands in prompt.repo at prompt.path exactly, and a component without `prompt` is no destination for one. Precedence: config.targets[kind] > components[component] > none. With none, target.repo is CLEARED, the proposal records TargetResolved False/NoDestination naming the component, and it is never published; it is still written, because the finding is real. NO SCHEMA DEFAULT at any depth, deliberately: core-provider applies schema defaults into the live composition spec. The chart's values.yaml seeds the platform's components, each verified to exist. Absent, every proposal not covered by config.targets records NoDestination. Helm merges maps: add a component by setting it, drop one with `<component>: null`.",
+          "description": "THE ONLY SOURCE OF A PROPOSAL'S DESTINATION besides config.targets: the model's target.repo is never used. `components` maps a subject's component (the `component/` half, normalised like a subject: lowercase kebab) to {repo, pathPrefix, prompt}. A proposal about a listed component lands in `repo` under `pathPrefix`, keeping the model's file name; a Prompt proposal lands in prompt.repo at prompt.path exactly, and a component without `prompt` is no destination for one. Precedence: config.targets[kind] > components[component] > a blueprint's derived source repository (`blueprints`) > none. With none, target.repo is CLEARED, the proposal records TargetResolved False/NoDestination naming the component, and it is never published; it is still written, because the finding is real. NO SCHEMA DEFAULT at any depth, deliberately: core-provider applies schema defaults into the live composition spec. The chart's values.yaml seeds the platform's components, each verified to exist. Absent, every proposal not covered by config.targets records NoDestination. Helm merges maps: add a component by setting it, drop one with `<component>: null`.",
           "properties": {
             "components": {
               "type": "object",
@@ -203,6 +203,25 @@
                       }
                     }
                   }
+                }
+              }
+            },
+            "blueprints": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Where a proposal about a BLUEPRINT lands when config.destinations.components does not list it: its source repository, derived each run from the chart URL of the CompositionDefinition that serves it (oci://ghcr.io/<org>/charts/<name> -> <org>/<name>, the release convention). Cluster data, never model output. Only for charts published by `orgs`; never for a Prompt proposal. TargetResolved still checks the repository exists. NO SCHEMA DEFAULT at any depth, deliberately: core-provider applies schema defaults into the live composition spec. Absent, nothing is derived.",
+              "properties": {
+                "orgs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                  },
+                  "description": "GitHub orgs a blueprint's source repository may be derived in."
+                },
+                "pathPrefix": {
+                  "type": "string",
+                  "description": "Directory inside the blueprint's repository the proposal's file lands in; empty puts it at the repository root."
                 }
               }
             }
