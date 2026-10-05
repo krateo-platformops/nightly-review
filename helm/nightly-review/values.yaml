@@ -239,6 +239,12 @@ config:
       sse-proxy:           { repo: krateo-platformops/sse-proxy, pathPrefix: docs }
       krateo-alert-troubleshooter: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
       alert-troubleshooter: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      # alert-troubleshooter's successor: its charts are that repository's helm/alert-provider[-crds].
+      alert-provider:      { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      krateo-alert-provider: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      incident-controller: { repo: krateo-platformops/incident-controller, pathPrefix: docs }
+      # oasgen-provider publishes it from helm/controller-render-service, co-versioned with its own two charts.
+      controller-render-service: { repo: krateo-platformops/oasgen-provider, pathPrefix: docs }
       nightly-review:      { repo: krateo-platformops/nightly-review }
       otel-collector:      { repo: krateo-platformops/otel-collector, pathPrefix: docs }
       otel-collector-deployment-opentelemetry-collector: { repo: krateo-platformops/otel-collector, pathPrefix: docs }
@@ -257,6 +263,8 @@ config:
       snowplow-crd:        { repo: krateo-platformops/snowplow, pathPrefix: docs }
       git-provider-crd:    { repo: krateo-platformops/git-provider, pathPrefix: docs }
       alert-troubleshooter-crd: { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      alert-provider-crd:  { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
+      incident-controller-crd: { repo: krateo-platformops/incident-controller, pathPrefix: docs }
       nightly-review-crd:  { repo: krateo-platformops/nightly-review }
       kagent-crds:         { repo: krateo-agentiko/kagent, pathPrefix: docs }
       # The COMPOSITIONS' charts live in observability (charts/otel-collector-*); the collector's code, which
@@ -268,6 +276,17 @@ config:
       # --- blueprints (krateo-blueprints) -----------------------------------------------------------------
       github-provider-kog: { repo: krateo-blueprints/github-provider-kog, pathPrefix: docs }
       krateo-marketplace-catalog: { repo: krateo-blueprints/marketplace, pathPrefix: krateo-marketplace-catalog }
+    # A BLUEPRINT NOT LISTED ABOVE gets its source repository from the cluster, not from here: each run reads
+    # the CompositionDefinitions, and a chart at oci://ghcr.io/<org>/charts/<name> is built from
+    # github.com/<org>/<name> (the release convention; the Blueprint Builder names the repository after the
+    # blueprint). Only for these orgs, never for a Prompt, and below the components map in precedence — so
+    # krateo-marketplace-catalog above, whose repository is `marketplace`, keeps its entry. The file lands
+    # under pathPrefix: `chart` is where builder-published blueprints keep Chart.yaml and values.schema.json.
+    # TargetResolved still checks the repository exists; a multi-chart repository breaks the convention and
+    # reads NotFoundOrPrivate there.
+    blueprints:
+      orgs: [krateo-blueprints]
+      pathPrefix: chart
 
   # RESOURCES OUT OF SYNC FOR TOO LONG. A deterministic check, no model: every kind the API serves in these
   # groups (discovered at run time — a provider that grows a kind is covered the night it ships) is listed,

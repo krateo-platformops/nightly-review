@@ -143,6 +143,19 @@ Cite it as source "agent-analysis", with observedCount set to the count the anal
 component is the agent's name as the analysis spells it without its namespace (k8s-agent), and its signal
 the pattern (misroute-helm-release-questions), so the same failure tomorrow is the same finding.
 
+THE DAY'S REAL FAILURES COME FIRST. The incidents evidence lists the Incidents the platform opened, fired,
+analysed or ended in this window — what opened each, the object it was about, the root cause and the fix
+its analysis wrote, and whether it ended. The compositions evidence lists every Composition not Ready or not
+Synced now, and every one that RECOVERED in the window, each with the blueprint (CompositionDefinition and
+chart) it was installed from. Neither is ranked by log volume, so a failure there is real even when no log
+pattern shows it. A FAILURE A PERSON OR AN INCIDENT HAD TO FIX IS THE STRONGEST EVIDENCE YOU HAVE FOR A
+PLATFORM CHANGE: propose the change that would have PREVENTED it — a validation or a safer default in the
+blueprint that let it happen, an Alert that would have caught it sooner, the documentation that would have
+let a person fix it alone — and cite the object by namespace/name, with source "kubernetes". A finding about
+a blueprint names the BLUEPRINT as the subject's component, spelled as the compositions evidence spells it
+(blueprint <name>), so it lands in that blueprint's source repository. An incident whose root cause is the
+alert itself (a filter that matches its own echo) is a finding about that Alert, not about the platform.
+
 RESOURCES OUT OF SYNC. The sync-health evidence lists Krateo-managed resources whose Synced condition has
 been False past a threshold, grouped by component and failure pattern. It was COUNTED by this service, and
 each group listed there has ALREADY been written as a Proposal under the subject shown. Do not propose
@@ -307,6 +320,14 @@ def _destinations_note(destinations, components=None):
     return out
 
 
+# The day's real failures ahead of everything ranked by volume; the rest alphabetically, as before.
+FIRST = ("incidents", "compositions")
+
+
+def _block_order(name):
+    return (FIRST.index(name), "") if name in FIRST else (len(FIRST), name)
+
+
 def build_user_message(window, evidence_blocks, coverage=None, destinations=None, components=None):
     """The single user turn: what was examined, how much of it, where fixed kinds land, then the fenced
     corpus.
@@ -331,7 +352,7 @@ def build_user_message(window, evidence_blocks, coverage=None, destinations=None
         return body.replace(f"</evidence-{fid}", "</evidence-REMOVED").replace("</evidence", "</evidence-REMOVED")
     fenced = "\n".join(
         f"<evidence-{fid} source=\"{name}\">\n{_quote(body)}\n</evidence-{fid}>"
-        for name, body in sorted(evidence_blocks.items())
+        for name, body in sorted(evidence_blocks.items(), key=lambda kv: _block_order(kv[0]))
     )
     return (
         f"{header}\n"

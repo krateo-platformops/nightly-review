@@ -82,6 +82,34 @@ TOKEN_ENV = "TARGET_CHECK_TOKEN"
 # honest state for an install that has not said where anything goes.
 DESTINATIONS = json.loads(os.environ.get("TARGET_DESTINATIONS") or "{}")
 COMPONENTS = json.loads(os.environ.get("TARGET_COMPONENTS") or "{}")
+# {orgs, pathPrefix}: config.destinations.blueprints, as JSON — WHICH ORGS a blueprint's source repository may
+# be DERIVED in. A blueprint's repository is not configured per component: it is read, each run, from the
+# chart URL of the CompositionDefinition that serves it (failures.compositions), and that URL is cluster
+# data, not model output. Allowed orgs only: a chart pulled from anywhere else gets no derived destination.
+# Empty here, like every destination: an install that names no org derives nothing.
+BLUEPRINT_POLICY = json.loads(os.environ.get("TARGET_BLUEPRINTS") or "{}")
+# blueprint name -> "org/repo", filled once per run by register_blueprints. Never from the model.
+BLUEPRINTS = {}
+
+
+def blueprint_orgs(policy=None):
+    """The orgs config.destinations.blueprints allows a derived destination in."""
+    orgs = ((BLUEPRINT_POLICY if policy is None else policy) or {}).get("orgs") or []
+    return [o for o in orgs if isinstance(o, str) and _NAME.match(o)]
+
+
+def register_blueprints(found, policy=None):
+    """Remember this run's derived blueprint repositories ({name: "org/repo"}), keyed like a subject's
+    component. Anything outside the allowed orgs, or not a GitHub owner/name, is dropped here as well as
+    where it was derived: this is the boundary, the derivation is only its first user."""
+    allowed = {o.lower() for o in blueprint_orgs(policy)}
+    BLUEPRINTS.clear()
+    for name, repo in (found or {}).items():
+        owner, _, rname = (repo or "").partition("/")
+        norm = P.normalise_subject(f"{name}/x")
+        if norm and owner.lower() in allowed and _NAME.match(owner) and _REPO.match(rname):
+            BLUEPRINTS[norm.partition("/")[0]] = repo
+    return dict(BLUEPRINTS)
 
 
 def _cond(status, reason, message):
@@ -187,7 +215,12 @@ def destination(proposal, destinations=None, components=None):
       2. config.destinations.components[component] — the component the subject names. For a Prompt proposal,
          only that entry's `prompt: {repo, path}`: a prompt is ONE file, so the path is taken exactly, and an
          entry without `prompt` is no destination for a Prompt — its chart repository is not its prompt.
-      3. nothing: no destination. The model's own choice is never the fallback."""
+      3. a BLUEPRINT's source repository, when the component is a blueprint (a CompositionDefinition's name)
+         whose OCI chart is published by an org config.destinations.blueprints.orgs allows: derived from the
+         chart URL by the release convention (oci://ghcr.io/<org>/charts/<name> is built from
+         github.com/<org>/<name>), under its pathPrefix. Never for a Prompt. The URL is cluster data, read this
+         run; TargetResolved still checks the repository exists.
+      4. nothing: no destination. The model's own choice is never the fallback."""
     kinds = DESTINATIONS if destinations is None else destinations
     comps = _components(COMPONENTS if components is None else components)
     kind = proposal.get("kind")
@@ -196,6 +229,12 @@ def destination(proposal, destinations=None, components=None):
         return over["repo"], _join(over.get("pathPrefix"), _file_name(proposal)), f"config.targets.{kind}"
     comp = component(proposal)
     entry = comps.get(comp) if comp else None
+    derived = BLUEPRINTS.get(comp) if comp else None
+    if not isinstance(entry, dict) and derived and kind != "Prompt":
+        # 3. A blueprint: its source repository, from its CompositionDefinition's chart URL.
+        prefix = ((BLUEPRINT_POLICY or {}).get("pathPrefix"))
+        return derived, _join(prefix, _file_name(proposal)), \
+            f"blueprint {comp}: the CompositionDefinition's chart URL (config.destinations.blueprints)"
     if not isinstance(entry, dict):
         return None, None, (f"no destination configured for component {comp}; add it to config.destinations"
                             if comp else "no subject component to look a destination up by; the subject "

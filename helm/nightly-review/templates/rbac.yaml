@@ -141,6 +141,38 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "nightly-review.fullname" . }}
     namespace: {{ .Release.Namespace }}
+---
+# CLUSTER-SCOPED, LIST ONLY: THE DAY'S REAL FAILURES (failures.py). Incidents are the failures the platform
+# opened and investigated; Compositions are where a person sees one; CompositionDefinitions name the
+# blueprint (chart URL and version) a failing composition was installed from, which is how a proposal about
+# it finds the blueprint's source repository. Every composition.krateo.io kind is DISCOVERED at run time —
+# a blueprint registered today is a kind that did not exist yesterday — so `resources` is "*" in that group,
+# with `list` only. No Secrets: they are in the core group, which is not in this rule.
+# Not gated on dryRun: this is evidence gathering, on every run.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-failures-read
+rules:
+  - apiGroups: ["observability.krateo.io"]
+    resources: ["incidents"]
+    verbs: ["list"]
+  - apiGroups: ["composition.krateo.io"]
+    resources: ["*"]
+    verbs: ["list"]
+  - apiGroups: ["core.krateo.io"]
+    resources: ["compositiondefinitions"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-failures-read
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ include "nightly-review.fullname" . }}-failures-read }
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "nightly-review.fullname" . }}
+    namespace: {{ .Release.Namespace }}
 {{- $syncGroups := list }}
 {{- range $group, $cfg := (dig "syncStall" "groups" dict .Values.config) }}
 {{- if $cfg }}
@@ -219,6 +251,46 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ include "nightly-review.fullname" . }}-portal-admin
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ include "nightly-review.fullname" . }}-portal-admin }
+subjects:
+  {{- range .Values.portalAdminAccess.groups }}
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: {{ . | quote }}
+  {{- end }}
+---
+# "RUN REVIEW NOW": what the portal's button needs, as the signed-in admin. It does what
+# `kubectl create job --from=cronjob/<this>` does — GET the CronJob (THIS ONE, by name), POST a Job built
+# from its jobTemplate — and then reads Jobs back to show the run's progress. This namespace only.
+#
+# `create` ON JOBS IS WIDER THAN THE BUTTON, stated rather than hidden: RBAC cannot tie a created Job to
+# the CronJob it came from, so a holder of this verb could create any Job in this namespace, running as any
+# ServiceAccount here. It goes to the same groups that already decide proposals — on Krateo installs the
+# `admins` group, which holds cluster-admin through the portal's own binding, so it grants them nothing they
+# lack; it exists so the button keeps working if that binding is ever narrowed.
+#
+# A manual Job and the scheduled one cannot collide: the run is named from its actual start time (rr-
+# YYYYMMDD-HHMM, with seconds on a same-minute clash), and a run that starts while another is still Running
+# records itself as not run (main.py). concurrencyPolicy: Forbid governs only the Jobs the CronJob creates.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-run-now
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    resourceNames: [{{ include "nightly-review.fullname" . | quote }}]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "nightly-review.fullname" . }}-run-now
+  namespace: {{ .Release.Namespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ include "nightly-review.fullname" . }}-run-now }
 subjects:
   {{- range .Values.portalAdminAccess.groups }}
   - apiGroup: rbac.authorization.k8s.io

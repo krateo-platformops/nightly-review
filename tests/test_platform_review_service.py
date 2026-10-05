@@ -415,7 +415,7 @@ def test_no_destination_is_hardcoded_in_the_code():
     import io
     import tokenize
     for name in ("targets.py", "main.py", "prompt.py", "analysis.py", "publish.py", "proposals.py",
-                 "sync_health.py"):
+                 "sync_health.py", "failures.py"):
         src = (ROOT / name).read_text()
         doc_lines = set()
         for node in ast.walk(ast.parse(src)):
@@ -728,6 +728,7 @@ def _drive(monkeypatch, ask_fails=False, extra_props=()):
     import main as M
     import sync_health as S
 
+    import test_failures as TF
     import test_sync_stall as T
 
     import analysis as AN
@@ -748,9 +749,13 @@ def _drive(monkeypatch, ask_fails=False, extra_props=()):
                                      "annotations": {"krateo.io/nav-path": "/dashboard"}}},
                        {"metadata": {"name": "dashboard-row-1"}}],
                # 2026-10-01's outage, read by the sync-stall check through discovery: two findings.
-               cluster=T._outage(ago=60 * 24 * 365), configs={(c[0], c[1]): c[2] for c in T.CONFIGS})
+               # ...and the day's failures: Incidents, CompositionDefinitions and a failing composition.
+               cluster=dict(T._outage(ago=60 * 24 * 365), incidents=TF.INCIDENTS, compositiondefinitions=TF.CDS,
+                            **TF.COMPS),
+               configs={(c[0], c[1]): c[2] for c in T.CONFIGS})
     monkeypatch.setattr(S, "GROUPS", T.GROUPS)
-    monkeypatch.setattr(S, "discoverer", lambda client: T._discover)
+    monkeypatch.setattr(S, "discoverer", lambda client: (
+        lambda g: TF.SERVED if g == "composition.krateo.io" else T._discover(g)))
     monkeypatch.setattr(M.config, "load_incluster_config", lambda: None)
     monkeypatch.setattr(M.client, "CustomObjectsApi", lambda: api)
     cm = types.SimpleNamespace(data={"busy": "You are busy. Always cite the tool you used."},
@@ -869,6 +874,11 @@ def test_every_reviewrun_status_the_service_writes_is_declared(full_run):
     ks = final["evidence"]["kagent-sessions"]
     assert ks["questions"] == 1 and ks["shapes"]["unparseable"] == 1 and ks["droppedMessages"] > 0, ks
     assert final["evidence"]["kubernetes"]["returned"] == 2, "an Alert and one page root"
+    assert final["evidence"]["incidents"]["ok"] and final["evidence"]["incidents"]["returned"] == 4
+    comps = final["evidence"]["compositions"]
+    assert comps["ok"] and comps["failing"] == 1, comps
+    (main_message,) = [m for ctx, m in full_run.asked if not ctx]
+    assert main_message.index('source="compositions"') < main_message.index('source="clickhouse"')
     assert final["summary"] and final["model"]["inputTokens"] == 9
     assert [s["name"] for s in final["steps"]] == ["gather", "analyse", "ask", "validate", "publish", "record"]
     aa = final["evidence"]["agent-analysis"]
