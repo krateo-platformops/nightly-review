@@ -9,6 +9,7 @@ status.analyzedResources, status.resolution) and the composition labels
 import datetime as dt
 import os
 import sys
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -203,6 +204,92 @@ def test_compositions_degrade_per_kind_and_without_definitions():
 ])
 def test_the_blueprint_repository_comes_only_from_the_oci_convention(url, want):
     assert F.blueprint_repo(url) == want
+
+
+# --- warning events on compositions (ClickHouse k8s-events) ----------------------------------------
+
+REFUSED_MSG = ('reconciling helm chart: reconcile: kube update (self-heal apply): failed to create resource: '
+               'Deployment.apps "web-api-deployment" is invalid: spec.template.spec.containers[0].resources.requests: '
+               'Invalid value: "2": must be less than or equal to cpu limit of 500m')
+
+
+def _group(kind, ns, name, reason, count=3, uid="", msg=REFUSED_MSG, first="2026-10-05 07:01:02", last="2026-10-05 07:40:00"):
+    return {"kind": kind, "namespace": ns, "name": name, "uid": uid, "reason": reason, "count": count,
+            "firstSeen": first, "lastSeen": last, "message": msg}
+
+
+def _comps_with_uid():
+    comps = {k: [dict(o) for o in v] for k, v in COMPS.items()}
+    comps["tenantdbs"][0]["metadata"] = dict(comps["tenantdbs"][0]["metadata"], uid="u-orders")
+    comps["tenantdbs"].append(_comp("TenantDb", "web-api", ready=("True", "Available", 100), cd="tenant-db"))
+    return comps
+
+
+EVENTS = [_group("TenantDb", "team-a", "x-renamed", "CannotObserveExternalResource", uid="u-orders",
+                 msg="values don't meet the specifications"),                                  # matched by uid
+          _group("TenantDb", "team-a", "web-api", "CannotObserveExternalResource", count=12),  # by name+ns+kind
+          _group("TenantDb", "team-b", "deleted-db", "CannotDeleteExternalResource", count=2,
+                 msg="waiting for 1 managed child(ren) to finalize")]
+
+
+def test_a_composition_refused_and_synced_again_is_listed_as_recovered_with_the_refusal():
+    """The case conditions cannot show: a chart the apiserver refused (cpu request over its limit) shows only
+    Synced=False, and once a person fixes it the condition says nothing. The Warning events still do."""
+    body, st, _ = F.compositions(_Api(comps=_comps_with_uid()), lambda g: SERVED, WINDOW,
+                                 orgs=["krateo-blueprints"], read_events=lambda w: (EVENTS, None))
+    assert st["ok"] and st["warningEvents"] == 17
+    refused = body.split("RECOVERED after being REFUSED")[1].split("RECOVERED in the window")[0]
+    assert "TenantDb team-a/web-api: recovered (was refused: CannotObserveExternalResource)" in refused
+    assert "source repository krateo-blueprints/tenant-db" in refused
+    assert ("warning event CannotObserveExternalResource x12, first 2026-10-05 07:01:02, last 2026-10-05 07:40:00: "
+            "reconciling helm chart") in refused and "must be less than or equal to cpu limit" in refused
+    # Matched by uid even under another name, and shown under the failing composition, not as recovered.
+    failing = body.split("NOT healthy now:")[1].split("RECOVERED")[0]
+    assert "orders-db" in failing and "values don't meet the specifications" in failing
+    assert "orders-db" not in refused
+    # A composition gone since its events is still named.
+    assert "NO LONGER EXIST" in body and "TenantDb team-b/deleted-db:" in body
+    assert st["recovered"] == 3 and st["failing"] == 1 and st["findings"] == 5
+
+
+def test_a_clickhouse_failure_degrades_the_source_but_the_conditions_still_answer():
+    def boom(window):
+        raise RuntimeError("Code: 516. Authentication failed")
+    body, st, _ = F.compositions(_Api(), lambda g: SERVED, WINDOW, read_events=boom)
+    assert st["ok"] is False and "warning events (ClickHouse)" in st["error"]
+    assert "orders-db" in body
+
+
+def test_the_warning_event_query_is_bounded_excludes_expiries_and_parses_rows(monkeypatch):
+    import evidence as E
+    sent = {}
+
+    def post(url, data=None, params=None, **k):
+        sent.update(data=data, params=params)
+        rows = ['{"kind":"TenantDb","namespace":"team-a","name":"web-api","uid":"u1","reason":"CannotObserveExternalResource",'
+                '"count":"4","firstSeen":"2026-10-05 07:01:02.123","lastSeen":"2026-10-05 07:40:00.9","message":"m"}',
+                '["not", "a", "row"]', "garbage", '{"kind":"","name":"x"}']
+        return types.SimpleNamespace(raise_for_status=lambda: None, text="\n".join(rows))
+    monkeypatch.setattr(E, "CLICKHOUSE_URL", "http://clickhouse.invalid")
+    monkeypatch.setattr(E, "requests", types.SimpleNamespace(post=post))
+    groups, note = F.warning_events(WINDOW)
+    assert note is None and groups == [{"kind": "TenantDb", "namespace": "team-a", "name": "web-api", "uid": "u1",
+                                        "reason": "CannotObserveExternalResource", "count": 4,
+                                        "firstSeen": "2026-10-05 07:01:02", "lastSeen": "2026-10-05 07:40:00",
+                                        "message": "m"}]
+    sql = sent["data"]
+    assert "BETWEEN '2026-10-04 09:00:00' AND '2026-10-05 09:00:00'" in sql, "the window, in the prunable format"
+    assert "JSONExtractString(Body, 'type') != 'DELETED'" in sql, "an expiry is a copy, not an occurrence"
+    assert "JSONExtractString(Body, 'object', 'type') = 'Warning'" in sql
+    assert "startsWith(JSONExtractString(Body, 'object', 'involvedObject', 'apiVersion'), 'composition.krateo.io/')" in sql
+    assert "{" not in sql.replace("FORMAT JSONEachRow", ""), "every placeholder substituted"
+    assert sent["params"]["max_result_rows"] == F.MAX_EVENT_GROUPS
+
+
+def test_no_clickhouse_configured_is_a_note_not_a_failure(monkeypatch):
+    import evidence as E
+    monkeypatch.setattr(E, "CLICKHOUSE_URL", "")
+    assert F.warning_events(WINDOW) == ([], "warning events not read: CLICKHOUSE_URL is not configured")
 
 
 # --- targets ----------------------------------------------------------------------------------------

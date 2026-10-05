@@ -31,6 +31,7 @@ A composition that failed and recovered TWICE in the window shows only the last 
 fixing it would need an event history this service does not keep.
 """
 import datetime as dt
+import json
 import re
 
 import evidence
@@ -47,6 +48,11 @@ CD_GROUP, CD_VERSION, CD_PLURAL = "core.krateo.io", "v1alpha1", "compositiondefi
 MAX_INCIDENTS = 25
 MAX_FAILING = 40
 MAX_RECOVERED = 25
+MAX_REFUSED = 25
+MAX_GONE = 10
+MAX_EVENT_GROUPS = 300
+EVENT_REASONS_PER_COMPOSITION = 3
+EVENT_MESSAGE_CHARS = 300
 TEXT_CHARS = 400
 
 # The convention every Krateo chart release follows: the org-wide release-oci workflow publishes each
@@ -238,13 +244,14 @@ def _blueprint_text(bp, obj, blueprints):
             + (f"; source repository {repo}" if repo else "") + ")")
 
 
-def compositions(api, discover, window, orgs=()):
+def compositions(api, discover, window, orgs=(), read_events=None):
     """(body, stats, blueprints). body lists every composition NOT Ready or NOT Synced now, and every one
     that RECOVERED inside the window, each with its blueprint; blueprints maps every CompositionDefinition
     whose OCI chart is published by one of `orgs` (config.destinations.blueprints.orgs) to the "org/repo" its
     chart URL implies, so targets can aim a proposal about that blueprint at its source."""
     frm, to = _parse(window["from"]), _parse(window["to"])
     stats = {"ok": True, "queried": 0, "returned": 0, "findings": 0}
+    read_events = read_events or warning_events
 
     def fail(what, exc):
         stats["ok"] = False
@@ -270,7 +277,23 @@ def compositions(api, discover, window, orgs=()):
     allowed = {o.lower() for o in orgs or ()}
     blueprints = {bp["name"]: f"{repo[0]}/{repo[1]}" for bp in by_name.values()
                   if bp.get("name") and (repo := blueprint_repo(bp["url"])) and repo[0].lower() in allowed}
-    failing, recovered = [], []
+    try:
+        groups, note = read_events(window)
+    except Exception as exc:                                  # noqa: BLE001
+        # Degraded, not blank: conditions still answer; a failure fixed in the window is what is lost.
+        groups, note = [], None
+        fail("warning events (ClickHouse)", exc)
+    if note:
+        stats["note"] = note
+    stats["warningEvents"] = sum(g["count"] for g in groups)
+    by_uid, by_ref = {}, {}
+    for g in groups:
+        if g["uid"]:
+            by_uid.setdefault(g["uid"], []).append(g)
+        by_ref.setdefault((g["namespace"], g["kind"], g["name"]), []).append(g)
+    matched = set()
+
+    failing, refused, recovered = [], [], []
     for version, plural, kind, _ in served:
         try:
             items = sync_health._list(api, COMPOSITION_GROUP, version, plural, stats)
@@ -281,43 +304,71 @@ def compositions(api, discover, window, orgs=()):
         stats["returned"] += len(items)
         for obj in items:
             obj.setdefault("kind", kind)
+            meta = obj.get("metadata") or {}
+            # BY UID OR BY name+namespace+kind: an event recorded before a composition was deleted and recreated
+            # under the same name is still about the composition a person sees under that name.
+            ev = by_uid.get(meta.get("uid")) or by_ref.get((meta.get("namespace") or "", obj["kind"], meta.get("name")))
+            if ev:
+                matched.update(id(g) for g in ev)
             conds = _conds(obj)
             bad = [c for t in ("Ready", "Synced") if (c := conds.get(t)) and c.get("status") != "True"]
             ready = conds.get("Ready") or {}
-            created = _parse((obj.get("metadata") or {}).get("creationTimestamp"))
+            synced = conds.get("Synced") or {}
+            created = _parse(meta.get("creationTimestamp"))
             if bad:
-                failing.append((obj, bad))
+                failing.append((obj, bad, ev or []))
+            elif ev and synced.get("status") == "True":
+                refused.append((obj, ev))
             elif (ready.get("status") == "True" and _in(ready.get("lastTransitionTime"), frm, to)
                   and created is not None and created < frm):
                 recovered.append((obj, ready))
-            else:
-                continue
+    gone = {}
+    for g in groups:
+        if id(g) not in matched:
+            gone.setdefault((g["namespace"], g["kind"], g["name"]), []).append(g)
 
-    stats["failing"], stats["recovered"] = len(failing), len(recovered)
-    stats["findings"] = len(failing) + len(recovered)
-    if not failing and not recovered:
+    stats["failing"], stats["recovered"] = len(failing), len(refused) + len(recovered)
+    stats["findings"] = len(failing) + len(refused) + len(recovered) + len(gone)
+    if not stats["findings"]:
         if stats["ok"]:
             stats |= {"empty": True, "note": f"{stats['returned']} composition(s): all Ready and Synced, none "
-                                              f"recovered in the window"}
+                                              f"recovered and no Warning events in the window"}
         return None, stats, blueprints
 
     def since(c):
         t = c.get("lastTransitionTime")
         return f"since {t}" + (" (in the window)" if _in(t, frm, to) else " (before the window)") if t else "no time"
 
+    def bp_text(obj):
+        return _blueprint_text(_blueprint(obj, by_name, by_kind), obj, blueprints)
+
     failing.sort(key=lambda f: (f[0]["kind"], f[0]["metadata"].get("namespace", ""), f[0]["metadata"]["name"]))
+    refused.sort(key=lambda r: max(g["lastSeen"] for g in r[1]), reverse=True)
     recovered.sort(key=lambda r: r[1].get("lastTransitionTime") or "", reverse=True)
     lines = []
     if failing:
         lines.append(f"- {len(failing)} composition(s) NOT healthy now:")
-        for obj, bad in failing[:MAX_FAILING]:
+        for obj, bad, ev in failing[:MAX_FAILING]:
             m = obj["metadata"]
             lines.append(f"  - {_ref(m.get('namespace'), obj['kind'], m['name'])}: "
                          + "; ".join(f"{c.get('type')}={c.get('status')}/{c.get('reason') or '-'} {since(c)}: "
                                      f"{_short(c.get('message'), 300) or 'no message'}" for c in bad))
-            lines.append(f"    {_blueprint_text(_blueprint(obj, by_name, by_kind), obj, blueprints)}")
+            lines.append(f"    {bp_text(obj)}")
+            lines += _event_lines(ev)
         if len(failing) > MAX_FAILING:
             lines.append(f"  - ... and {len(failing) - MAX_FAILING} more not listed")
+    if refused:
+        lines.append(f"- {len(refused)} composition(s) RECOVERED after being REFUSED — Warning events on the "
+                     f"composition inside the window, Synced=True now. Each was refused by the apiserver or its controller "
+                     f"and is not any more — fixed by a person, or transient; the message says which:")
+        for obj, ev in refused[:MAX_REFUSED]:
+            m = obj["metadata"]
+            reasons = ", ".join(dict.fromkeys(g["reason"] for g in ev))
+            lines.append(f"  - {_ref(m.get('namespace'), obj['kind'], m['name'])}: recovered (was refused: "
+                         f"{reasons}); {bp_text(obj)}")
+            lines += _event_lines(ev)
+        if len(refused) > MAX_REFUSED:
+            lines.append(f"  - ... and {len(refused) - MAX_REFUSED} more not listed")
     if recovered:
         lines.append(f"- {len(recovered)} composition(s) RECOVERED in the window — Ready=True stamped inside it on "
                      f"a composition created before it, so it was not Ready earlier in the window (a chart "
@@ -325,11 +376,105 @@ def compositions(api, discover, window, orgs=()):
         for obj, ready in recovered[:MAX_RECOVERED]:
             m = obj["metadata"]
             lines.append(f"  - {_ref(m.get('namespace'), obj['kind'], m['name'])}: Ready=True/"
-                         f"{ready.get('reason') or '-'} since {ready.get('lastTransitionTime')}; "
-                         f"{_blueprint_text(_blueprint(obj, by_name, by_kind), obj, blueprints)}")
+                         f"{ready.get('reason') or '-'} since {ready.get('lastTransitionTime')}; {bp_text(obj)}")
         if len(recovered) > MAX_RECOVERED:
             lines.append(f"  - ... and {len(recovered) - MAX_RECOVERED} more not listed")
-    if len(failing) > MAX_FAILING or len(recovered) > MAX_RECOVERED:
-        stats["note"] = (f"listed {min(len(failing), MAX_FAILING)} of {len(failing)} failing and "
-                         f"{min(len(recovered), MAX_RECOVERED)} of {len(recovered)} recovered")
+    if gone:
+        lines.append(f"- {len(gone)} composition(s) with Warning events in the window that NO LONGER EXIST "
+                     f"(deleted since):")
+        for (ns, kind, name), ev in sorted(gone.items(), key=lambda kv: max(g["lastSeen"] for g in kv[1]), reverse=True)[:MAX_GONE]:
+            lines.append(f"  - {_ref(ns, kind, name)}:")
+            lines += _event_lines(ev)
+        if len(gone) > MAX_GONE:
+            lines.append(f"  - ... and {len(gone) - MAX_GONE} more not listed")
+    cut = [f"{min(n, cap)} of {n} {what}" for what, n, cap in (
+        ("failing", len(failing), MAX_FAILING), ("refused-then-recovered", len(refused), MAX_REFUSED),
+        ("recovered", len(recovered), MAX_RECOVERED), ("deleted", len(gone), MAX_GONE)) if n > cap]
+    if cut:
+        stats["note"] = "; ".join(filter(None, [stats.get("note"), "listed " + ", ".join(cut)]))
     return evidence._cap(P.redact("\n".join(lines)), stats), stats, blueprints
+
+
+def _event_lines(groups):
+    """One line per (reason) for one composition: how many, first and last seen, and the latest message."""
+    out = []
+    for g in sorted(groups, key=lambda g: g["lastSeen"], reverse=True)[:EVENT_REASONS_PER_COMPOSITION]:
+        out.append(f"    warning event {g['reason']} x{g['count']}, first {g['firstSeen']}, last {g['lastSeen']}: "
+                   f"{_short(g['message'], EVENT_MESSAGE_CHARS) or 'no message'}")
+    return out
+
+
+# WARNING EVENTS ON COMPOSITIONS, FROM CLICKHOUSE — NOT THE EVENTS API, which keeps an Event for about an
+# hour: a refusal fixed in the morning is gone from it by the nightly run. The collector's k8sobjects
+# receiver watches Events and writes each watch notification as one otel_logs row, telemetry.source
+# 'k8s-events', with the notification as JSON in Body: {"type": ADDED|MODIFIED|DELETED, "object": <Event>}.
+# Shapes verified on 057 (2026-10-05):
+#   - DELETED rows are the apiserver EXPIRING an Event, a copy of one already recorded: excluded, or every
+#     occurrence counts twice (on 057, 278,733 DELETED against 284,249 ADDED in seven days).
+#   - composition-dynamic-controller writes events.k8s.io-style Events: firstTimestamp/lastTimestamp null,
+#     `count` 0, a new Event (new metadata.uid) per occurrence, eventTime set. So occurrences are counted per
+#     Event uid, taking count or series.count when an Event carries one, and the row Timestamp is the clock.
+# The window bound is the same {from}/{to} text substitution, in the same index-friendly format, as every
+# configured query (evidence._ch_time).
+WARNING_EVENTS_SQL = """
+SELECT kind, namespace, name, uid, reason, sum(n) AS count,
+       toString(min(first)) AS firstSeen, toString(max(last)) AS lastSeen, argMax(msg, last) AS message
+FROM (
+  SELECT JSONExtractString(Body, 'object', 'involvedObject', 'kind')      AS kind,
+         JSONExtractString(Body, 'object', 'involvedObject', 'namespace') AS namespace,
+         JSONExtractString(Body, 'object', 'involvedObject', 'name')      AS name,
+         JSONExtractString(Body, 'object', 'involvedObject', 'uid')       AS uid,
+         JSONExtractString(Body, 'object', 'reason')                      AS reason,
+         JSONExtractString(Body, 'object', 'metadata', 'uid')             AS event,
+         greatest(max(JSONExtractInt(Body, 'object', 'count')),
+                  max(JSONExtractInt(Body, 'object', 'series', 'count')), 1) AS n,
+         min(Timestamp) AS first, max(Timestamp) AS last,
+         substring(argMax(JSONExtractString(Body, 'object', 'message'), Timestamp), 1, 600) AS msg
+  FROM otel_logs
+  WHERE Timestamp BETWEEN '{from}' AND '{to}'
+    AND ResourceAttributes['telemetry.source'] = 'k8s-events'
+    AND JSONExtractString(Body, 'type') != 'DELETED'
+    AND JSONExtractString(Body, 'object', 'type') = 'Warning'
+    AND startsWith(JSONExtractString(Body, 'object', 'involvedObject', 'apiVersion'), 'composition.krateo.io/')
+  GROUP BY kind, namespace, name, uid, reason, event
+)
+GROUP BY kind, namespace, name, uid, reason
+ORDER BY lastSeen DESC
+LIMIT {limit}
+"""
+
+
+def warning_events(window):
+    """([group], note): Warning events on composition.krateo.io objects in the window, one group per
+    (composition, reason). Through the same ClickHouse endpoint and credentials as the configured queries.
+    Not configured is a note, not a failure — the conditions still answer. A failed query raises."""
+    if not evidence.CLICKHOUSE_URL:
+        return [], "warning events not read: CLICKHOUSE_URL is not configured"
+    sql = (WARNING_EVENTS_SQL.replace("{from}", evidence._ch_time(window["from"]))
+           .replace("{to}", evidence._ch_time(window["to"])).replace("{limit}", str(MAX_EVENT_GROUPS)))
+    r = evidence.requests.post(
+        evidence.CLICKHOUSE_URL, data=f"{sql}\nFORMAT JSONEachRow",
+        params={"max_result_rows": MAX_EVENT_GROUPS, "result_overflow_mode": "break"},
+        auth=(evidence.CLICKHOUSE_USER, evidence.CLICKHOUSE_PASSWORD) if evidence.CLICKHOUSE_USER else None,
+        timeout=120)
+    r.raise_for_status()
+    groups = []
+    for ln in r.text.splitlines():
+        try:
+            row = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or not row.get("kind") or not row.get("name"):
+            continue
+        try:
+            count = int(row.get("count") or 1)
+        except (TypeError, ValueError):
+            count = 1
+        groups.append({"kind": str(row["kind"]), "namespace": str(row.get("namespace") or ""),
+                       "name": str(row["name"]), "uid": str(row.get("uid") or ""),
+                       "reason": str(row.get("reason") or "-"), "count": count,
+                       "firstSeen": str(row.get("firstSeen") or "?")[:19], "lastSeen": str(row.get("lastSeen") or "?")[:19],
+                       "message": str(row.get("message") or "")})
+    note = (f"warning events: the first {MAX_EVENT_GROUPS} (composition, reason) groups only"
+            if len(groups) >= MAX_EVENT_GROUPS else None)
+    return groups, note

@@ -197,12 +197,18 @@ spec:
                       failing:
                         type: integer
                         description: compositions only. Compositions whose Ready or Synced condition is not True now.
+                      warningEvents:
+                        type: integer
+                        description: >-
+                          compositions only. Warning events on composition.krateo.io objects in the window, read
+                          from ClickHouse (k8s-events rows; the Events API keeps them for about an hour).
                       recovered:
                         type: integer
                         description: >-
-                          compositions only. Compositions created before the window whose Ready=True was
-                          stamped inside it: not Ready earlier in the window. A chart upgrade's rollout
-                          stamps the same, so this is an upper bound on recoveries from a failure.
+                          compositions only. Compositions Synced now that received Warning events in the window
+                          (refused, then recovered), plus those created before the window whose Ready=True was
+                          stamped inside it. A chart upgrade's rollout stamps Ready the same, so the second kind
+                          is an upper bound on recoveries from a failure.
                       thresholdMinutes:
                         type: integer
                         description: sync-health only. The threshold in force for this run.

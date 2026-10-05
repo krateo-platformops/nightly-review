@@ -147,7 +147,9 @@ THE DAY'S REAL FAILURES COME FIRST. The incidents evidence lists the Incidents t
 analysed or ended in this window — what opened each, the object it was about, the root cause and the fix
 its analysis wrote, and whether it ended. The compositions evidence lists every Composition not Ready or not
 Synced now, and every one that RECOVERED in the window, each with the blueprint (CompositionDefinition and
-chart) it was installed from. Neither is ranked by log volume, so a failure there is real even when no log
+chart) it was installed from, and the Warning events the composition received in the window — a composition
+REFUSED by the apiserver or its controller and Synced again now is listed as "recovered (was refused: …)" with
+the refusal's message, which is often the only trace left of a failure someone fixed. Neither is ranked by log volume, so a failure there is real even when no log
 pattern shows it. A FAILURE A PERSON OR AN INCIDENT HAD TO FIX IS THE STRONGEST EVIDENCE YOU HAVE FOR A
 PLATFORM CHANGE: propose the change that would have PREVENTED it — a validation or a safer default in the
 blueprint that let it happen, an Alert that would have caught it sooner, the documentation that would have
