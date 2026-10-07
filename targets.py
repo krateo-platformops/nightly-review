@@ -88,7 +88,8 @@ COMPONENTS = json.loads(os.environ.get("TARGET_COMPONENTS") or "{}")
 # data, not model output. Allowed orgs only: a chart pulled from anywhere else gets no derived destination.
 # Empty here, like every destination: an install that names no org derives nothing.
 BLUEPRINT_POLICY = json.loads(os.environ.get("TARGET_BLUEPRINTS") or "{}")
-# blueprint name -> "org/repo", filled once per run by register_blueprints. Never from the model.
+# blueprint COMPONENT ("blueprint-<name>", as a subject carries it) -> "org/repo", filled once per run by
+# register_blueprints. Never from the model.
 BLUEPRINTS = {}
 
 
@@ -96,6 +97,31 @@ def blueprint_orgs(policy=None):
     """The orgs config.destinations.blueprints allows a derived destination in."""
     orgs = ((BLUEPRINT_POLICY if policy is None else policy) or {}).get("orgs") or []
     return [o for o in orgs if isinstance(o, str) and _NAME.match(o)]
+
+
+def blueprint_component(name):
+    """The subject component a finding about this blueprint will actually carry.
+
+    failures._blueprint_text renders a blueprint in the compositions evidence as `blueprint <name>`, and
+    prompt.py tells the model to spell the subject's component exactly as the evidence spells it. By the
+    time destination() sees it, normalise_subject has folded the space, so the component is
+    `blueprint-<name>`.
+
+    The registry has to be keyed on that same string. Keyed on the bare `<name>` the lookup can never hit —
+    not for any kind, org policy or evidence — so every blueprint finding is silently dropped with
+    TargetResolved=False/NoDestination. See #44."""
+    norm = P.normalise_subject(f"blueprint {name}/x")
+    return norm.partition("/")[0] if norm else None
+
+
+def blueprint_keys(name):
+    """Every component spelling that should find this blueprint.
+
+    The evidence spelling is the one the prompt asks for and the one real proposals carry. The bare name is
+    kept because it is what this registry has always held: dropping it would change how an existing subject
+    resolves, and this fix is meant to add a lookup that could never hit, not to remove one that can."""
+    norm = P.normalise_subject(f"{name}/x")
+    return [k for k in (blueprint_component(name), norm.partition("/")[0] if norm else None) if k]
 
 
 def register_blueprints(found, policy=None):
@@ -106,9 +132,10 @@ def register_blueprints(found, policy=None):
     BLUEPRINTS.clear()
     for name, repo in (found or {}).items():
         owner, _, rname = (repo or "").partition("/")
-        norm = P.normalise_subject(f"{name}/x")
-        if norm and owner.lower() in allowed and _NAME.match(owner) and _REPO.match(rname):
-            BLUEPRINTS[norm.partition("/")[0]] = repo
+        keys = blueprint_keys(name)
+        if keys and owner.lower() in allowed and _NAME.match(owner) and _REPO.match(rname):
+            for key in keys:
+                BLUEPRINTS[key] = repo
     return dict(BLUEPRINTS)
 
 
@@ -233,8 +260,9 @@ def destination(proposal, destinations=None, components=None):
     if not isinstance(entry, dict) and derived and kind != "Prompt":
         # 3. A blueprint: its source repository, from its CompositionDefinition's chart URL.
         prefix = ((BLUEPRINT_POLICY or {}).get("pathPrefix"))
+        named = comp if comp.startswith("blueprint-") else f"blueprint {comp}"
         return derived, _join(prefix, _file_name(proposal)), \
-            f"blueprint {comp}: the CompositionDefinition's chart URL (config.destinations.blueprints)"
+            f"{named}: the CompositionDefinition's chart URL (config.destinations.blueprints)"
     if not isinstance(entry, dict):
         return None, None, (f"no destination configured for component {comp}; add it to config.destinations"
                             if comp else "no subject component to look a destination up by; the subject "
