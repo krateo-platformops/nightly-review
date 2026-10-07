@@ -266,6 +266,15 @@ config:
       alert-provider-crd:  { repo: krateo-platformops/alert-troubleshooter, pathPrefix: docs }
       incident-controller-crd: { repo: krateo-platformops/incident-controller, pathPrefix: docs }
       nightly-review-crd:  { repo: krateo-platformops/nightly-review }
+      # --- provider blueprints (krateo-blueprints) -------------------------------------------------------
+      # One repository publishes BOTH charts, named for the PROVIDER not the chart: the pins' `chart:`
+      # fields are krateo-gcp-configconnector and krateo-gcp-configconnector-crds, but the source is the
+      # single krateo-gcp-blueprint repo (same shape as krateo-aws-blueprint). Both charts declare it in
+      # Chart.yaml `sources:`. Searching for a repo per CHART, or by the installer's COMPONENT name,
+      # returns 404 and reads as "no source repository" — which is how these two were wrongly recorded
+      # as unmapped in #46. Verified 2026-10-07: repo public, charts pull at 0.1.2, cluster agrees.
+      gcp-configconnector:     { repo: krateo-blueprints/krateo-gcp-blueprint, pathPrefix: docs }
+      gcp-configconnector-crd: { repo: krateo-blueprints/krateo-gcp-blueprint, pathPrefix: docs }
       kagent-crds:         { repo: krateo-agentiko/kagent, pathPrefix: docs }
       # The COMPOSITIONS' charts live in observability (charts/otel-collector-*); the collector's code, which
       # the Deployment keys above point at, is otel-collector.
