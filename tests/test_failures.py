@@ -306,8 +306,16 @@ def test_a_blueprint_proposal_lands_in_its_derived_repository_under_the_allowed_
     got = targets.register_blueprints({"tenant-db": "krateo-blueprints/tenant-db",
                                        "github-provider-kog": "krateo-blueprints/github-provider-kog",
                                        "evil": "someone-else/repo", "bad": "krateo-blueprints/../x"})
-    assert got == {"tenant-db": "krateo-blueprints/tenant-db",
+    # Both spellings are registered: the evidence spelling `blueprint-<name>`, which is what prompt.py tells
+    # the model to write and what real proposals carry, and the bare `<name>` this registry has always held.
+    # Keyed only on the bare name, no real blueprint finding could ever resolve a destination (#44).
+    assert got == {"blueprint-tenant-db": "krateo-blueprints/tenant-db",
+                   "tenant-db": "krateo-blueprints/tenant-db",
+                   "blueprint-github-provider-kog": "krateo-blueprints/github-provider-kog",
                    "github-provider-kog": "krateo-blueprints/github-provider-kog"}
+    p = _prop(subject="blueprint-tenant-db/size-pattern-rejected")
+    assert "retargeted" in targets.aim(p) and p["target"] == {"repo": "krateo-blueprints/tenant-db",
+                                                               "path": "chart/values-schema.json"}
     p = _prop()
     assert "retargeted" in targets.aim(p) and p["target"] == {"repo": "krateo-blueprints/tenant-db",
                                                                "path": "chart/values-schema.json"}
