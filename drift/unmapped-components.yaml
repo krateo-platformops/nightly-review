@@ -13,6 +13,16 @@ unmapped:
     Upstream Gateway API CRDs, wrapped as a chart published to oci://ghcr.io/krateo-blueprints/charts.
     No source repository for the wrapper exists in krateo-blueprints (checked 2026-09-30); a finding about
     upstream CRDs is not a pull request this platform can open.
+  gcp-configconnector: >-
+    Upstream Google Config Connector (cnrm.cloud.google.com), wrapper chart published to
+    oci://ghcr.io/krateo-blueprints/charts/krateo-gcp-configconnector with no source repository found
+    (checked 2026-10-07: krateo-gcp-configconnector and gcp-configconnector both 404 in krateo-blueprints).
+    A finding about Config Connector's own controllers is not a pull request this platform can open.
+  gcp-configconnector-crd: >-
+    The CRDs of the same upstream, published to
+    oci://ghcr.io/krateo-blueprints/charts/krateo-gcp-configconnector-crds with no source repository found
+    (checked 2026-10-07: krateo-gcp-configconnector-crds and gcp-configconnector-crd both 404). Same reason
+    as gateway-api-crds: a finding about upstream CRDs has nowhere to land.
   agentgateway: >-
     Upstream agentgateway (cr.agentgateway.dev images), wrapper chart published to
     oci://ghcr.io/krateo-blueprints/charts with no source repository found. Findings about the gateway's
