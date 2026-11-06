@@ -14,8 +14,8 @@ DEFAULT = "oci://ghcr.io/krateo-platformops/charts"
 PINS = [{"name": "snowplow"}, {"name": "autopilot-x", "repo": "oci://ghcr.io/krateo-agentiko/charts"},
         {"name": "cert-manager", "repo": "oci://ghcr.io/krateo-blueprints/charts"}]
 COMPS = {"snowplow": {"repo": "krateo-platformops/snowplow"},
-         "autopilot-x": {"repo": "krateo-agentiko/autopilot",
-                         "prompt": {"repo": "krateo-agentiko/autopilot", "path": "p.yaml"}}}
+         "autopilot-x": {"repo": "krateo-agentiko/agentiko",
+                         "prompt": {"repo": "krateo-agentiko/agentiko", "path": "p.yaml"}}}
 UNMAPPED = {"cert-manager": "upstream"}
 
 

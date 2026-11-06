@@ -186,10 +186,10 @@ config:
       # --- agents: the chart repository, and the prompt file a Prompt proposal edits -------------------
       # autopilot's prompts-eng.yaml carries three keys (autopilot, helm_agent, k8s_agent): helm-agent and
       # k8s-agent are rendered by the krateo-autopilot chart, from the same file.
-      autopilot:           { repo: krateo-agentiko/autopilot, pathPrefix: docs, prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
-      helm-agent:          { repo: krateo-agentiko/autopilot, pathPrefix: docs, prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
-      k8s-agent:           { repo: krateo-agentiko/autopilot, pathPrefix: docs, prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
-      krateo-autopilot:    { repo: krateo-agentiko/autopilot, pathPrefix: docs }
+      autopilot:           { repo: krateo-agentiko/agentiko, pathPrefix: docs, prompt: { repo: krateo-agentiko/agentiko, path: chart/files/prompts-eng.yaml } }
+      helm-agent:          { repo: krateo-agentiko/agentiko, pathPrefix: docs, prompt: { repo: krateo-agentiko/agentiko, path: chart/files/prompts-eng.yaml } }
+      k8s-agent:           { repo: krateo-agentiko/agentiko, pathPrefix: docs, prompt: { repo: krateo-agentiko/agentiko, path: chart/files/prompts-eng.yaml } }
+      krateo-autopilot:    { repo: krateo-agentiko/agentiko, pathPrefix: docs }
       frontend-agent:      { repo: krateo-agentiko/frontend-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/frontend-agent, path: helm/frontend-agent/files/prompts-eng.yaml } }
       core-provider-agent: { repo: krateo-agentiko/core-provider-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/core-provider-agent, path: helm/core-provider-agent/files/prompts-eng.yaml } }
       installer-agent:     { repo: krateo-agentiko/installer-agent, pathPrefix: docs, prompt: { repo: krateo-agentiko/installer-agent, path: helm/installer-agent/files/prompts-eng.yaml } }
