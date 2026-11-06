@@ -336,7 +336,7 @@ def test_the_anonymous_check_sends_no_credential(monkeypatch):
     """No token configured, no Authorization header — and a 404 stays honest about being anonymous."""
     sent = []
     monkeypatch.setattr(targets, "requests", _head(404, headers=sent))
-    assert targets.resolve("krateo-agentiko/autopilot")["reason"] == "NotFoundOrPrivate"
+    assert targets.resolve("krateo-agentiko/agentiko")["reason"] == "NotFoundOrPrivate"
     assert "Authorization" not in sent[0]
 
 
@@ -600,7 +600,7 @@ RR_0200 = [
      "prompts/installer_agent.txt"),
     ("Alert", "installer-chart-inspector/rbac-generation-http-500", "krateo-observability",
      "alerts/chart-inspector-rbac-generation-failure.yaml"),
-    ("Prompt", "autopilot/suggest-widget-kinds-to-specialist", "krateo-agentiko/autopilot", "prompts/autopilot.txt"),
+    ("Prompt", "autopilot/suggest-widget-kinds-to-specialist", "krateo-agentiko/agentiko", "prompts/autopilot.txt"),
 ]
 
 
@@ -619,7 +619,7 @@ def test_rr_20260930_0200_replayed_through_the_seeded_values():
         ("krateo-platformops/observability", obs + "kog-provider-cannot-observe-external-resource.yaml"),
         ("krateo-agentiko/installer-agent", "helm/installer-agent/files/prompts-eng.yaml"),
         ("krateo-platformops/observability", obs + "chart-inspector-rbac-generation-failure.yaml"),
-        ("krateo-agentiko/autopilot", "chart/files/prompts-eng.yaml"),
+        ("krateo-agentiko/agentiko", "chart/files/prompts-eng.yaml"),
     ]
 
 

@@ -150,8 +150,8 @@ config:
   destinations:
     components:
       snowplow:  { repo: krateo-platformops/snowplow, pathPrefix: docs }
-      autopilot: { repo: krateo-agentiko/autopilot, pathPrefix: docs,
-                   prompt: { repo: krateo-agentiko/autopilot, path: chart/files/prompts-eng.yaml } }
+      autopilot: { repo: krateo-agentiko/agentiko, pathPrefix: docs,
+                   prompt: { repo: krateo-agentiko/agentiko, path: chart/files/prompts-eng.yaml } }
 ```
 
 **Adding a component.** Take the name from a `NoDestination` message (it is the subject's component, as

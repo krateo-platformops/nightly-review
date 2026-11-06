@@ -15,7 +15,7 @@ to punish the address.
 AUTHENTICATED WHEN THE CHART SAYS SO, WITH A CREDENTIAL THIS SERVICE CANNOT GO AND FETCH. The check
 was anonymous, and on 057 that made it useless exactly where it mattered: every Prompt proposal of
 rr-20260930-0200 aimed at a krateo-agentiko repository, all of which are private, and all of them read
-NotFoundOrPrivate — including krateo-agentiko/installer-agent and krateo-agentiko/autopilot, which exist.
+NotFoundOrPrivate — including krateo-agentiko/installer-agent and krateo-agentiko/agentiko, which exist.
 So config.targetCheck.tokenSecret names a key of an EXISTING Secret (gh-token/token on 057) and the
 CronJob injects it as TARGET_CHECK_TOKEN through `valueFrom.secretKeyRef`. The KUBELET reads that
 Secret, not this service: the ServiceAccount still holds no `get` on Secrets, so what the anonymous
@@ -187,7 +187,7 @@ def _resolve(repo):
                      f"the organisations that credential can read; a private repository elsewhere would "
                      f"also answer 404.")
     if r.status_code == 404:
-        # NOT "RepoNotFound": krateo-agentiko/krateo-autopilot and incident-agent are private and are
+        # NOT "RepoNotFound": krateo-agentiko/agentiko and incident-agent are private and are
         # exactly where a Prompt proposal belongs. A reason that read "not found" would tell a reviewer the
         # model invented a repository it got right. The reason names both possibilities, so a UI can show
         # "unverified" rather than "wrong".
