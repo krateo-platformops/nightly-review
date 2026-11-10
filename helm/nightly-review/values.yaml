@@ -285,6 +285,45 @@ config:
       # --- blueprints (krateo-blueprints) -----------------------------------------------------------------
       github-provider-kog: { repo: krateo-blueprints/github-provider-kog, pathPrefix: docs }
       krateo-marketplace-catalog: { repo: krateo-blueprints/marketplace, pathPrefix: krateo-marketplace-catalog }
+      # The selfservice blueprint's repository carries one chart per directory; selfservice-status is
+      # its selfservice-status/ chart. github-provider-kog's config chart is that repository's config-chart/.
+      selfservice-status:  { repo: krateo-blueprints/krateo-selfservice-blueprint, pathPrefix: docs/selfservice-status }
+      github-provider-kog-config: { repo: krateo-blueprints/github-provider-kog, pathPrefix: docs }
+      # --- components the installer pins since 2026-10 (checked against each repository's Chart.yaml,
+      # 2026-11-10) ------------------------------------------------------------------------------------
+      # The portal's page charts: each is helm/<name> in the portal repository, released with it (1.8.x).
+      marketplace-page:    { repo: krateo-platformops/portal, pathPrefix: docs }
+      service-desk-page:   { repo: krateo-platformops/portal, pathPrefix: docs }
+      incidents-page:      { repo: krateo-platformops/portal, pathPrefix: docs }
+      alerts-page:         { repo: krateo-platformops/portal, pathPrefix: docs }
+      dashboard-page:      { repo: krateo-platformops/portal, pathPrefix: docs }
+      compositions-page:   { repo: krateo-platformops/portal, pathPrefix: docs }
+      blueprints-page:     { repo: krateo-platformops/portal, pathPrefix: docs }
+      resources-page:      { repo: krateo-platformops/portal, pathPrefix: docs }
+      search-page:         { repo: krateo-platformops/portal, pathPrefix: docs }
+      builders-page:       { repo: krateo-platformops/portal, pathPrefix: docs }
+      clusters-page:       { repo: krateo-platformops/portal, pathPrefix: docs }
+      reviews-page:        { repo: krateo-platformops/portal, pathPrefix: docs }
+      settings-page:       { repo: krateo-platformops/portal, pathPrefix: docs }
+      observability-page:  { repo: krateo-platformops/portal, pathPrefix: docs }
+      audit-page:          { repo: krateo-platformops/portal, pathPrefix: docs }
+      # observability's charts/<name>, beside krateo-observability and the collector compositions.
+      krateo-slo-rollup:   { repo: krateo-platformops/observability, pathPrefix: docs }
+      krateo-audit-worm:   { repo: krateo-platformops/observability, pathPrefix: docs }
+      otel-collector-tailsampling: { repo: krateo-platformops/observability, pathPrefix: docs }
+      # The frontend repository publishes it from helm/builder-gate, co-versioned with frontend and frontend-crds.
+      builder-gate:        { repo: krateo-platformops/frontend, pathPrefix: docs }
+      # The agentiko chart (krateo-agentiko/agentiko chart/) renders autopilot, helm-agent and k8s-agent, so its
+      # prompt is the same file theirs is.
+      agentiko:            { repo: krateo-agentiko/agentiko, pathPrefix: docs, prompt: { repo: krateo-agentiko/agentiko, path: chart/files/prompts-eng.yaml } }
+      showback:            { repo: krateo-platformops/showback, pathPrefix: docs }
+      # Each publishes helm/<name> and helm/<name>-crds from one repository; the -crd component shares it.
+      incident-provider:   { repo: krateo-platformops/incident-provider, pathPrefix: docs }
+      incident-provider-crd: { repo: krateo-platformops/incident-provider, pathPrefix: docs }
+      access-review:       { repo: krateo-platformops/access-review, pathPrefix: docs }
+      access-review-crd:   { repo: krateo-platformops/access-review, pathPrefix: docs }
+      identity-lifecycle:  { repo: krateo-platformops/identity-lifecycle, pathPrefix: docs }
+      identity-lifecycle-crd: { repo: krateo-platformops/identity-lifecycle, pathPrefix: docs }
     # A BLUEPRINT NOT LISTED ABOVE gets its source repository from the cluster, not from here: each run reads
     # the CompositionDefinitions, and a chart at oci://ghcr.io/<org>/charts/<name> is built from
     # github.com/<org>/<name> (the release convention; the Blueprint Builder names the repository after the
