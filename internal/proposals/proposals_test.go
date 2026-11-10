@@ -583,3 +583,55 @@ func TestNullSubjectsNeverAKey(t *testing.T) {
 		t.Fatal("a missing subject made a key")
 	}
 }
+
+// --- one unreadable proposal does not fail the night -----------------------------------------------
+
+func TestAProposalWhoseContentCannotBeReadIsDroppedAndItsSiblingsSurvive(t *testing.T) {
+	item := func(v any) error { return jsonschema.Validate(v, prompt.ItemSchema) }
+	for name, content := range map[string]string{
+		"impossible timestamp": "a: 2020-13-45\n",             // the constructor raises ValueError
+		"unhashable kind":      "apiVersion: v1\nkind: [a]\n", // the alert-kind check raises TypeError
+		"nesting too deep":     strings.Repeat("[", 600) + strings.Repeat("]", 600) + "\n",
+	} {
+		bad := p(map[string]any{"kind": "Policy", "title": "bad", "change": map[string]any{"format": "yaml", "content": content}})
+		kept, notes, err := P.ValidateBatch(map[string]any{"proposals": []any{p(nil), bad, p(map[string]any{"title": "another"})}},
+			noop, item)
+		if err != nil {
+			t.Fatalf("%s: the whole batch failed: %v", name, err)
+		}
+		var titles []string
+		for _, k := range kept {
+			titles = append(titles, k["title"].(string))
+			if k["fingerprint"] == "" {
+				t.Errorf("%s: a sibling lost its fingerprint", name)
+			}
+		}
+		if !reflect.DeepEqual(titles, []string{"t", "another"}) {
+			t.Errorf("%s: kept %v", name, titles)
+		}
+		dropped := false
+		for _, n := range notes {
+			if strings.HasPrefix(n, "DROPPED proposal[1] (Policy): its change.content could not be read as yaml (") {
+				dropped = true
+			}
+		}
+		if !dropped {
+			t.Errorf("%s: the bad proposal was not reported: %v", name, notes)
+		}
+	}
+}
+
+func TestTheUnreadableNoteNamesTheErrorAndQuotesNoSecret(t *testing.T) {
+	bad := p(map[string]any{"kind": "Policy", "change": map[string]any{"format": "yaml",
+		"content": "a: 2020-13-45\nt: " + "ghp_" + strings.Repeat("A", 36) + "\n"}})
+	_, notes := batch(t, []any{bad}, nil)
+	var note string
+	for _, n := range notes {
+		if strings.Contains(n, "could not be read") {
+			note = n
+		}
+	}
+	if !strings.Contains(note, "ValueError") || strings.Contains(note, "ghp_") {
+		t.Fatalf("%q", note)
+	}
+}

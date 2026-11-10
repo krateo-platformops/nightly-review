@@ -541,6 +541,20 @@ func yamlStr(v pyyaml.Value) string {
 // What that costs, stated plainly rather than left for someone to discover: the reviewer may now name
 // any repository the install-level git credentials can write to.
 
+// unreadable is the note for a proposal whose content cannot be read as its format says: YAML that the
+// parser takes but cannot construct (a timestamp like 2020-13-45, an unhashable kind, nesting past the
+// recursion limit), so neither the alert-kind check nor the fingerprint can be computed.
+//
+// ONE SUCH PROPOSAL USED TO FAIL THE WHOLE NIGHT. The error escaped ValidateBatch, the run was recorded
+// Failed, and every other proposal was lost with it — the same single-item suppression per-item
+// validation exists to prevent, reached through the content instead of the schema. Such a proposal is
+// dropped and named here; its siblings are written. Checked after redaction, so the note cannot quote a
+// secret, and the error text is cut like the contract's own drop notes.
+func unreadable(i int, clean map[string]any, err error) string {
+	return fmt.Sprintf("DROPPED proposal[%d] (%s): its change.content could not be read as %s (%s)", i,
+		py.Str(clean["kind"]), py.Str(py.Get(clean["change"], "format")), py.Trunc(py.ExcString(err), 160))
+}
+
 // Refused is raised for the WHOLE batch. A partially valid response is not salvaged: deciding which
 // half the model meant is exactly the guess this service exists not to make.
 type Refused struct{ Msg string }
@@ -554,8 +568,8 @@ func (e *Refused) PyType() string { return "Refused" }
 type Check func(v any) error
 
 // ValidateBatch returns (proposals, notes). It fails with *Refused only when the RESPONSE ENVELOPE is
-// unusable; any other error is an exception Python would have let escape (a schema check that raised,
-// or a fingerprint that could not be computed).
+// unusable; any other error is a schema check that raised, or an item that is not an object when no item
+// check ran. A proposal whose content cannot be read is dropped with a note (see unreadable).
 //
 // A SINGLE BAD FIELD USED TO DISCARD THE WHOLE NIGHT. schema_check ran over the entire payload, so one
 // proposal with one wrong enum raised and eleven good ones went in the bin with it — and because the
@@ -610,7 +624,8 @@ func ValidateBatch(payload any, schemaCheck, itemCheck Check) ([]map[string]any,
 		// fires while looking like coverage. Checked AFTER redaction so the note cannot quote a secret.
 		dead, err := AlertKindViolation(clean)
 		if err != nil {
-			return nil, nil, err
+			notes = append(notes, unreadable(i, clean, err))
+			continue
 		}
 		if dead != "" {
 			notes = append(notes, fmt.Sprintf("DROPPED proposal[%d] (%s): %s", i, py.Str(clean["kind"]), dead))
@@ -629,7 +644,8 @@ func ValidateBatch(payload any, schemaCheck, itemCheck Check) ([]map[string]any,
 
 		fp, err := Fingerprint(clean)
 		if err != nil {
-			return nil, nil, err
+			notes = append(notes, unreadable(i, clean, err))
+			continue
 		}
 		clean["fingerprint"] = fp
 		kept = append(kept, clean)

@@ -843,3 +843,33 @@ func TestTheHandlerIsInstalledForSigterm(t *testing.T) {
 		t.Fatal("the handler did not run")
 	}
 }
+
+// One proposal whose YAML the parser cannot construct used to fail the whole night: the run was recorded
+// Failed and every other proposal was lost. Now the run completes, the bad one is named in the run's
+// notes, and the rest — the model's four and the sync-stall check's two — are written as before.
+func TestOneUnreadableProposalIsSkippedAndTheNightCompletes(t *testing.T) {
+	bad := with(prop("Policy", "gateway/bad-date", "a: 2020-13-45\n", "x/y", "policy.yaml", "yaml"), "confidence", "low")
+	d := drive(t, false, bad)
+	f := final(d.api)
+	if f["phase"] == "Failed" {
+		t.Fatalf("the run failed: %v", f["error"])
+	}
+	created := d.api.CreatesOf("proposals")
+	if len(created) != 6 {
+		t.Fatal("the model's four and the sync-stall check's two, without the unreadable one:", len(created))
+	}
+	for _, b := range created {
+		if py.GetPath(b, "spec", "subject") == "gateway/bad-date" {
+			t.Fatal("the unreadable proposal was written")
+		}
+	}
+	n := notes(t, f)
+	if !strings.Contains(n, "DROPPED proposal[4] (Policy): its change.content could not be read as yaml (ValueError: ") {
+		t.Fatal(n)
+	}
+	for _, s := range py.List(f["steps"]) {
+		if py.Get(s, "name") == "validate" && (py.Get(s, "phase") != "Succeeded" || !strings.Contains(py.Str(py.Get(s, "message")), "4 valid")) {
+			t.Fatal(s)
+		}
+	}
+}

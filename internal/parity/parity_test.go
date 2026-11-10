@@ -100,7 +100,7 @@ func values(t *testing.T) (any, any) {
 func TestProposalsMatchPython(t *testing.T) {
 	obs, comps := values(t)
 	cases := fixture(t, "proposals.json").([]any)
-	bad, fingerprints := 0, 0
+	bad, fingerprints, dropped := 0, 0, 0
 	schema := func(p any) error { return jsonschema.Validate(p, prompt.ResponseSchema) }
 	item := func(p any) error { return jsonschema.Validate(p, prompt.ItemSchema) }
 	for i, c := range cases {
@@ -132,8 +132,9 @@ func TestProposalsMatchPython(t *testing.T) {
 			return map[string]any{"ok": []any{kept, notes}}
 		}
 		got := batch(schema, item)
-		check(t, &bad, what+" validate_batch", got, py.Get(c, "batch"))
-		check(t, &bad, what+" validate_batch(no item check)", batch(func(any) error { return nil }, nil), py.Get(c, "batchNoItemCheck"))
+		check(t, &bad, what+" validate_batch", byDesign(&dropped, got, py.Get(c, "batch")), py.Get(c, "batch"))
+		noItem := batch(func(any) error { return nil }, nil)
+		check(t, &bad, what+" validate_batch(no item check)", byDesign(&dropped, noItem, py.Get(c, "batchNoItemCheck")), py.Get(c, "batchNoItemCheck"))
 
 		var aimed []any
 		if ok, isOK := got.(map[string]any)["ok"]; isOK {
@@ -162,7 +163,33 @@ func TestProposalsMatchPython(t *testing.T) {
 		}
 		check(t, &bad, what+" aim", aimed, py.Get(c, "aimed"))
 	}
-	t.Logf("%d proposals (%d fingerprinted), %d values differ", len(cases), fingerprints, bad)
+	t.Logf("%d proposals (%d fingerprinted), %d batches differ by design, %d values differ", len(cases), fingerprints, dropped, bad)
+}
+
+// byDesign is the one place this port leaves Python on purpose. Where
+// Python's validate_batch raised because a proposal's content could not be
+// read (a non-YAMLError out of the parser, an unhashable kind), the WHOLE
+// night failed; Go drops that one proposal with a note naming the same
+// exception (after any notes the earlier checks wrote, such as a
+// redaction). That outcome is mapped back to Python's exception so the rest
+// of the comparison still runs; anything else is returned unchanged and
+// must match exactly.
+func byDesign(dropped *int, got, want any) any {
+	exc, raised := py.Get(want, "exception").(string)
+	ok, isOK := got.(map[string]any)["ok"].([]any)
+	if !raised || !isOK || len(ok[0].([]map[string]any)) != 0 {
+		return got
+	}
+	notes := ok[1].([]string)
+	if len(notes) == 0 {
+		return got
+	}
+	last := notes[len(notes)-1]
+	if !strings.HasPrefix(last, "DROPPED proposal[0] (") || !strings.Contains(last, "could not be read as") || !strings.Contains(last, "("+exc+": ") {
+		return got
+	}
+	*dropped++
+	return map[string]any{"exception": exc}
 }
 
 func deepCopy(v any) any {
