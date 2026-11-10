@@ -4,7 +4,7 @@
 #
 # DAILY AS WELL AS ON EVERY CHANGE. What drifts is the installer: a new pin there opens no pull request
 # here, so a check that ran only on this repo's changes would find it on the next unrelated PR, if ever.
-# A failed fetch FAILS the job (destinations_drift.fetch raises) — a check that passes when GitHub is
+# A failed fetch FAILS the job (drift.Fetch returns an error) — a check that passes when GitHub is
 # unreachable is a check that passes.
 name: drift
 
@@ -24,11 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v6
         with:
-          python-version: "3.12"
-      - name: Install
-        run: pip install --no-cache-dir pytest==8.3.3 requests==2.32.3 PyYAML==6.0.2
+          go-version-file: go.mod
       - name: Destinations agree with the installer's pins
-        # -rA prints the assertion's list of what to add even when the summary is all you read.
-        run: python -m pytest drift/ -q -rA
+        # -v prints the list of what to add even when the summary is all you read.
+        run: go test -tags drift -count=1 -v ./drift/
