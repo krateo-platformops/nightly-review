@@ -1,11 +1,12 @@
-# Runs the trust-boundary suite on every pull request and every push to main.
+# Runs the test suite on every pull request and every push to main.
 #
 # THE WORKFLOW IS THE POINT, NOT THE TESTS. frontend#334 is the cautionary case: 1891 tests sat in that
 # repo while three regressions shipped on one code path, because nothing ever executed them. A control
 # nobody runs is a comment, and that applies as much to an allowlist check as to a lint rule.
 #
-# `python -m pytest`, never a bare runner invocation — the module form uses the interpreter this job
-# actually installed into, so a passing run cannot be a different interpreter's.
+# The suite includes the Python-parity fixtures (internal/parity, internal/pyyaml): fingerprints,
+# subjects, redaction, prompts and validation messages computed by the last Python service, asserted
+# byte for byte. A failure there means existing Proposal CRs would stop matching.
 name: test
 
 on:
@@ -21,15 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v6
         with:
-          python-version: "3.12"
-      - name: Install
-        # THE SAME PINS THE IMAGE INSTALLS, plus pytest. They used to differ, and the gap was
-        # invisible until it wasn't: the job installed neither kubernetes nor PyYAML, so the
-        # suite could only test modules that import neither, and the test files stubbed
-        # `requests` to work around its absence. A suite that runs against a different
-        # dependency set than the image is testing something that does not ship.
-        run: pip install --no-cache-dir pytest==8.3.3 requests==2.32.3 jsonschema==4.23.0 kubernetes==31.0.0 PyYAML==6.0.2
-      - name: Trust-boundary tests
-        run: python -m pytest tests/ -q
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./... && go vet -tags drift ./drift/
+      - name: Test
+        run: go test ./...

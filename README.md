@@ -49,7 +49,7 @@ portal-builder and blueprint-builder use. **This service holds no GitHub token**
 **There is no repository allowlist any more.** It existed to bound a GitHub write credential this
 service no longer holds, and it blocked proposals before a human could read them. The reviewer may name
 any repository; what bounds that is the human reading the pull request. See the epitaph in
-`proposals.py`.
+`internal/proposals/proposals.go`.
 
 ## Two objects, and why they are two
 
@@ -205,7 +205,7 @@ before the collector's JWT redaction landed can still carry live credentials.
 
 ## Resources out of sync
 
-`sync_health.py`, run in the `gather` stage. On 2026-10-01 the GitHub token in
+`internal/synchealth/synchealth.go`, run in the `gather` stage. On 2026-10-01 the GitHub token in
 `krateo-system/git-provider-credentials` expired. Every github.krateo.io Repository and PullRequest and every
 git.krateo.io Repo and LocalResource went `Synced=False` with a 401 and stayed there for hours (0 of 24
 Repositories synced), and nothing reported it. Someone noticed only because a publish stalled. An expired,

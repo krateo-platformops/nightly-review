@@ -1,0 +1,60 @@
+[
+{
+"sql": "\n    SELECT coalesce(agent_id, '(none)')                       AS agent,\n           count(*)                                            AS all_time,\n           count(*) FILTER (WHERE updated_at >= :frm\n                              AND updated_at <= :to)           AS in_window,\n           count(DISTINCT user_id)                             AS users,\n           max(updated_at)                                     AS last_seen\n      FROM session\n     WHERE deleted_at IS NULL\n     GROUP BY coalesce(agent_id, '(none)')\n     ORDER BY last_seen DESC NULLS LAST\n     LIMIT :lim\n",
+"statement": "\n    SELECT coalesce(agent_id, '(none)')                       AS agent,\n           count(*)                                            AS all_time,\n           count(*) FILTER (WHERE updated_at >= $1\n                              AND updated_at <= $2)           AS in_window,\n           count(DISTINCT user_id)                             AS users,\n           max(updated_at)                                     AS last_seen\n      FROM session\n     WHERE deleted_at IS NULL\n     GROUP BY coalesce(agent_id, '(none)')\n     ORDER BY last_seen DESC NULLS LAST\n     LIMIT $3\n",
+"order": [
+"frm",
+"to",
+"lim"
+]
+},
+{
+"sql": "\n    WITH q AS (\n    SELECT e.session_id,\n           coalesce(s.agent_id, '(none)')                                           AS agent,\n           e.created_at,\n           e.data,\n           row_number() OVER (PARTITION BY e.session_id ORDER BY e.created_at)      AS n,\n           count(*)     OVER (PARTITION BY e.session_id)                            AS in_session,\n           max(e.created_at) OVER (PARTITION BY e.session_id)                       AS last_at\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= :frm AND e.created_at <= :to\n       -- Implied by the line above (an insert bumps its session's updated_at), and here because\n       -- `event` has no index on created_at: this lets the planner start from the few sessions active\n       -- in the window and reach their events through idx_event_session_id, instead of scanning a\n       -- table that has filled a PVC on this platform before.\n       AND s.updated_at >= :frm\n       AND s.source IS DISTINCT FROM 'agent'\n       AND NOT (coalesce(s.agent_id, '') = ANY(string_to_array(:excluded, ',')))\n\n       AND (e.data LIKE '%\"author\":\"user\"%' OR e.data LIKE '%\"Author\":\"user\"%')\n    )\n    SELECT session_id, agent, data, in_session\n      FROM q\n     WHERE n <= :per\n       AND session_id IN (SELECT session_id FROM q GROUP BY session_id\n                           ORDER BY max(last_at) DESC LIMIT :sessions)\n     ORDER BY last_at DESC, session_id, created_at\n",
+"statement": "\n    WITH q AS (\n    SELECT e.session_id,\n           coalesce(s.agent_id, '(none)')                                           AS agent,\n           e.created_at,\n           e.data,\n           row_number() OVER (PARTITION BY e.session_id ORDER BY e.created_at)      AS n,\n           count(*)     OVER (PARTITION BY e.session_id)                            AS in_session,\n           max(e.created_at) OVER (PARTITION BY e.session_id)                       AS last_at\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= $1 AND e.created_at <= $2\n       -- Implied by the line above (an insert bumps its session's updated_at), and here because\n       -- `event` has no index on created_at: this lets the planner start from the few sessions active\n       -- in the window and reach their events through idx_event_session_id, instead of scanning a\n       -- table that has filled a PVC on this platform before.\n       AND s.updated_at >= $1\n       AND s.source IS DISTINCT FROM 'agent'\n       AND NOT (coalesce(s.agent_id, '') = ANY(string_to_array($3, ',')))\n\n       AND (e.data LIKE '%\"author\":\"user\"%' OR e.data LIKE '%\"Author\":\"user\"%')\n    )\n    SELECT session_id, agent, data, in_session\n      FROM q\n     WHERE n <= $4\n       AND session_id IN (SELECT session_id FROM q GROUP BY session_id\n                           ORDER BY max(last_at) DESC LIMIT $5)\n     ORDER BY last_at DESC, session_id, created_at\n",
+"order": [
+"frm",
+"to",
+"excluded",
+"per",
+"sessions"
+]
+},
+{
+"sql": "\n    SELECT count(*)                                              AS events,\n           count(*) FILTER (WHERE (e.data LIKE '%\"author\":\"user\"%' OR e.data LIKE '%\"Author\":\"user\"%'))              AS user_authored,\n           count(DISTINCT e.session_id) FILTER (WHERE (e.data LIKE '%\"author\":\"user\"%' OR e.data LIKE '%\"Author\":\"user\"%')) AS sessions,\n           count(DISTINCT e.session_id)                          AS active\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= :frm AND e.created_at <= :to\n       -- Implied by the line above (an insert bumps its session's updated_at), and here because\n       -- `event` has no index on created_at: this lets the planner start from the few sessions active\n       -- in the window and reach their events through idx_event_session_id, instead of scanning a\n       -- table that has filled a PVC on this platform before.\n       AND s.updated_at >= :frm\n       AND s.source IS DISTINCT FROM 'agent'\n       AND NOT (coalesce(s.agent_id, '') = ANY(string_to_array(:excluded, ',')))\n\n",
+"statement": "\n    SELECT count(*)                                              AS events,\n           count(*) FILTER (WHERE (e.data LIKE '%\"author\":\"user\"%' OR e.data LIKE '%\"Author\":\"user\"%'))              AS user_authored,\n           count(DISTINCT e.session_id) FILTER (WHERE (e.data LIKE '%\"author\":\"user\"%' OR e.data LIKE '%\"Author\":\"user\"%')) AS sessions,\n           count(DISTINCT e.session_id)                          AS active\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= $1 AND e.created_at <= $2\n       -- Implied by the line above (an insert bumps its session's updated_at), and here because\n       -- `event` has no index on created_at: this lets the planner start from the few sessions active\n       -- in the window and reach their events through idx_event_session_id, instead of scanning a\n       -- table that has filled a PVC on this platform before.\n       AND s.updated_at >= $1\n       AND s.source IS DISTINCT FROM 'agent'\n       AND NOT (coalesce(s.agent_id, '') = ANY(string_to_array($3, ',')))\n\n",
+"order": [
+"frm",
+"to",
+"excluded"
+]
+},
+{
+"sql": "\n    SELECT coalesce(s.agent_id, '(none)')                                   AS agent,\n           count(DISTINCT (s.id, s.user_id))                                AS sessions,\n           count(*)                                                          AS events,\n           count(DISTINCT (s.id, s.user_id)) FILTER (WHERE s.source = 'agent') AS delegated\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= :frm AND e.created_at <= :to\n       -- See evidence._ELIGIBLE: `event` has no index on created_at, and this lets the planner start from\n       -- the sessions active in the window.\n       AND s.updated_at >= :frm\n\n     GROUP BY coalesce(s.agent_id, '(none)')\n     ORDER BY sessions DESC, events DESC\n",
+"statement": "\n    SELECT coalesce(s.agent_id, '(none)')                                   AS agent,\n           count(DISTINCT (s.id, s.user_id))                                AS sessions,\n           count(*)                                                          AS events,\n           count(DISTINCT (s.id, s.user_id)) FILTER (WHERE s.source = 'agent') AS delegated\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= $1 AND e.created_at <= $2\n       -- See evidence._ELIGIBLE: `event` has no index on created_at, and this lets the planner start from\n       -- the sessions active in the window.\n       AND s.updated_at >= $1\n\n     GROUP BY coalesce(s.agent_id, '(none)')\n     ORDER BY sessions DESC, events DESC\n",
+"order": [
+"frm",
+"to"
+]
+},
+{
+"sql": "\n    WITH w AS (\n    SELECT coalesce(s.agent_id, '(none)') AS agent, s.source, e.session_id, e.user_id, e.id, e.created_at,\n           CASE WHEN length(e.data) > :maxdata THEN NULL ELSE e.data END AS data,\n           length(e.data)                                                    AS len\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= :frm AND e.created_at <= :to\n       -- See evidence._ELIGIBLE: `event` has no index on created_at, and this lets the planner start from\n       -- the sessions active in the window.\n       AND s.updated_at >= :frm\n\n       AND coalesce(s.agent_id, '(none)') = ANY(string_to_array(:agents, ','))\n    ), n AS (\n    SELECT w.*,\n           row_number() OVER (PARTITION BY session_id, user_id ORDER BY created_at, id) AS n,\n           count(*)     OVER (PARTITION BY session_id, user_id)                         AS in_session,\n           max(created_at) OVER (PARTITION BY session_id, user_id)                      AS last_at\n      FROM w\n    ), r AS (\n    SELECT n.*, dense_rank() OVER (PARTITION BY agent ORDER BY last_at DESC, session_id, user_id) AS sn\n      FROM n\n    )\n    SELECT agent, sn, source, in_session, n, data, len\n      FROM r\n     WHERE sn <= :sessions AND (n <= :head OR n > in_session - :tail)\n     ORDER BY agent, sn, n\n",
+"statement": "\n    WITH w AS (\n    SELECT coalesce(s.agent_id, '(none)') AS agent, s.source, e.session_id, e.user_id, e.id, e.created_at,\n           CASE WHEN length(e.data) > $1 THEN NULL ELSE e.data END AS data,\n           length(e.data)                                                    AS len\n    \n      FROM event e\n      JOIN session s ON s.id = e.session_id AND s.user_id = e.user_id\n     WHERE e.deleted_at IS NULL AND s.deleted_at IS NULL\n       AND e.created_at >= $2 AND e.created_at <= $3\n       -- See evidence._ELIGIBLE: `event` has no index on created_at, and this lets the planner start from\n       -- the sessions active in the window.\n       AND s.updated_at >= $2\n\n       AND coalesce(s.agent_id, '(none)') = ANY(string_to_array($4, ','))\n    ), n AS (\n    SELECT w.*,\n           row_number() OVER (PARTITION BY session_id, user_id ORDER BY created_at, id) AS n,\n           count(*)     OVER (PARTITION BY session_id, user_id)                         AS in_session,\n           max(created_at) OVER (PARTITION BY session_id, user_id)                      AS last_at\n      FROM w\n    ), r AS (\n    SELECT n.*, dense_rank() OVER (PARTITION BY agent ORDER BY last_at DESC, session_id, user_id) AS sn\n      FROM n\n    )\n    SELECT agent, sn, source, in_session, n, data, len\n      FROM r\n     WHERE sn <= $5 AND (n <= $6 OR n > in_session - $7)\n     ORDER BY agent, sn, n\n",
+"order": [
+"maxdata",
+"frm",
+"to",
+"agents",
+"sessions",
+"head",
+"tail"
+]
+},
+{
+"sql": "SELECT :a, ':b', $$ :c $$, \"x:d\", E'it\\'s :e', :a::int -- :f\n, :g",
+"statement": "SELECT $1, ':b', $$ :c $$, \"x:d\", E'it\\'s :e', $1::int -- :f\n, $2",
+"order": [
+"a",
+"g"
+]
+}
+]
