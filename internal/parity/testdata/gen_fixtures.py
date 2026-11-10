@@ -72,30 +72,51 @@ COMPS = VALUES["destinations"]["components"]
 # ---------------------------------------------------------------------------------------------------
 # Corpus: strings that reach redaction and subject normalisation
 # ---------------------------------------------------------------------------------------------------
+# ASSEMBLED FROM FRAGMENTS, each line carrying gitleaks:allow, for the reason the Python suite gave in
+# test_review_bookkeeping.py: the repository is scanned and these are shaped like credentials. None is real.
+P, K = "pass" + "word", "to" + "ken"
 SECRETISH = [
-    "eyJhbGciOiJIUzI1NiJ9.aaaaaaaaaaaaaaaaaaaaaaaaaa.bbb", "AKIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE",
-    "ghp_abcdefghijklmnopqrstuvwxyz0123", "GHP_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123", "github_pat_" + "a1_" * 9,
-    "Bearer abcdefghijklmnopqrstuvwxyz", "bearer   abc.def-ghi_jkl.mnopqrstuvwxyz",
+    "eyJ" + "hbGciOiJIUzI1NiJ9.aaaaaaaaaaaaaaaaaaaaaaaaaa.bbb", "AKIA" + "IOSFODNN7EXAMPLE", "ASIA" + "IOSFODNN7EXAMPLE",
+    "ghp_" + "abcdefghijklmnopqrstuvwxyz0123", "GHP_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123", "github_pat_" + "a1_" * 9,
+    "Bearer " + "abcdefghijklmnopqrstuvwxyz", "bearer   " + "abc.def-ghi_jkl.mnopqrstuvwxyz",
     "glpat-" + "a" * 24, "xoxb-" + "1" * 12 + "-abcdefghijkl", "AIza" + "B" * 35,
-    "postgres://user:s3cretpw@db.internal:5432/x", "https://diego:hunter2hunter2@github.com/org/repo",
-    "api_key=abcd1234efgh", "client_secret: verysecretvalue123", "DB_PASSWORD=s3cretValue9",
-    "PGPASSWORD=s3cretValue9", "MY_API_KEY=s3cretValue9", "export KAGENT_DB_PASSWORD='s3cret!value'",
-    '{"PGPASSWORD": "s3cretValue9"}', '{"db_access_token": "s3cretValue9"}', '"refresh_token": "abcdefgh12345"',
-    "TARGET_CHECK_TOKEN=s3cretValue9", "aws_secret_key: s3cretValue9", "aws_secret_access_key = AbC/dEf+GhI",
-    "token: " + "A" * 60, "client-key-data: " + "QUJD" * 15, "client-certificate-data:" + "x" * 44,
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----",
-    "-----BEGIN PRIVATE KEY-----MIIabc-----END PRIVATE KEY-----", "my password is Qu3stionPassw0rd",
-    "The admin password was 'hunter2hunter2'.", "your api key is AbCdEf123456789", "the token is s3cretToken99",
+    "postgres://user:" + "s3cretpw" + "@db.internal:5432/x",  # gitleaks:allow
+    "https://diego:" + "hunter2hunter2" + "@github.com/org/repo",  # gitleaks:allow
+    "api" + "_key=" + "abcd1234efgh",  # gitleaks:allow
+    "client" + "_secret: " + "verysecretvalue123",  # gitleaks:allow
+    "DB_" + P.upper() + "=" + "s3cretValue9",  # gitleaks:allow
+    "PG" + P.upper() + "=" + "s3cretValue9",  # gitleaks:allow
+    "MY_API" + "_KEY=" + "s3cretValue9",  # gitleaks:allow
+    "export KAGENT_DB_" + P.upper() + "='" + "s3cret!value" + "'",  # gitleaks:allow
+    '{"PG' + P.upper() + '": "' + "s3cretValue9" + '"}',  # gitleaks:allow
+    '{"db_access_' + K + '": "' + "s3cretValue9" + '"}',  # gitleaks:allow
+    '"refresh_' + K + '": "' + "abcdefgh12345" + '"',  # gitleaks:allow
+    "TARGET_CHECK_" + K.upper() + "=" + "s3cretValue9",  # gitleaks:allow
+    "aws_secret" + "_key: " + "s3cretValue9",  # gitleaks:allow
+    "aws_secret_access" + "_key = " + "AbC/dEf+GhI",  # gitleaks:allow
+    K + ": " + "A" * 60, "client-key-data: " + "QUJD" * 15, "client-certificate-data:" + "x" * 44,
+    "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIabc\n-----END RSA " + "PRIVATE KEY-----",  # gitleaks:allow
+    "-----BEGIN " + "PRIVATE KEY-----MIIabc-----END " + "PRIVATE KEY-----",  # gitleaks:allow
+    "my " + P + " is " + "Qu3stionPassw0rd",  # gitleaks:allow
+    "The admin " + P + " was '" + "hunter2hunter2" + "'.",  # gitleaks:allow
+    "your api key is " + "AbCdEf123456789",  # gitleaks:allow
+    "the " + K + " is " + "s3cretToken99",  # gitleaks:allow
     "the password is required", "How do I reset my password?", "set the password: see docs", "tokens used: 14518",
     "max_tokens=4096", '"totalTokens": 221497', "Rotate the DB_PASSWORD secret, then restart the pod.",
     "password: see below", "Please update your database_password immediately afterwards.",
-    "ADMIN_PASSWORD_B64=abcdefgh1234", '{"apiKeyValue": "hunter2hunter2"}', "clientSecret: hunter2hunter2",
-    "paſſword=hunter2hunter2", "toKen=abcdefgh1234", "TOKEN=abcdefgh1234", "İnfo token=abcdefgh1234",
+    "ADMIN_" + P.upper() + "_B64=" + "abcdefgh1234",  # gitleaks:allow
+    '{"apiKey' + 'Value": "' + "hunter2hunter2" + '"}',  # gitleaks:allow
+    "client" + "Secret: " + "hunter2hunter2",  # gitleaks:allow
+    "paſſword=" + "hunter2hunter2", "toKen=" + "abcdefgh1234",  # gitleaks:allow
+    K.upper() + "=" + "abcdefgh1234", "İnfo " + K + "=" + "abcdefgh1234",  # gitleaks:allow
     "x" * 14 + ".".join(["eyJhbGciOiJSUzI1NiIsImtpZCI6IngifQ", "eyJzdWIiOiJzeXN0ZW06c2EifQ", "c2lnbmF0dXJl"]),
-    "café password=hunter2hunter2 naïve", "日本 token=abcdefgh1234 語", "ünïcode_password=abcdefgh1234",
-    "password=" + "é" * 10, "password=ab cdefgh1234", "AKIA" + "Ä" + "IOSFODNN7EXAMPL", "ÉAKIAIOSFODNN7EXAMPLE",
-    "_AKIAIOSFODNN7EXAMPLE_", "1AKIAIOSFODNN7EXAMPLE", "ghp_" + "a" * 20 + "é", "secret_key: abcd1234efgh",
-    "SECRET-KEY = 'abcdefgh1234'", "passwd:abcdefgh", "passwd:abcdefg", "user:pass@host", "ftp://a:b@c",
+    "café " + P + "=" + "hunter2hunter2" + " naïve",  # gitleaks:allow
+    "日本 " + K + "=" + "abcdefgh1234" + " 語", "ünïcode_" + P + "=" + "abcdefgh1234",  # gitleaks:allow
+    P + "=" + "é" * 10, P + "=ab\u00a0" + "cdefgh1234", "AKIA" + "Ä" + "IOSFODNN7EXAMPL",  # gitleaks:allow
+    "ÉAKIA" + "IOSFODNN7EXAMPLE", "_AKIA" + "IOSFODNN7EXAMPLE_", "1AKIA" + "IOSFODNN7EXAMPLE", "ghp_" + "a" * 20 + "é",
+    "secret" + "_key: " + "abcd1234efgh",  # gitleaks:allow
+    "SECRET-KEY = '" + "abcdefgh1234" + "'",  # gitleaks:allow
+    "passwd:" + "abcdefgh", "passwd:" + "abcdefg", "user:pass@host", "ftp://a:b@c",  # gitleaks:allow
 ]
 WORDS = ["password", "passwd", "token", "api_key", "api-key", "apikey", "API KEY", "secret_key", "client_secret",
          "access_token", "refresh_token", "Bearer", "AKIA", "ghp_", "eyJ", "glpat-", "xoxp-", "AIza", "is", "was",

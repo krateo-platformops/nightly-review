@@ -235,7 +235,7 @@ func resolve(ctx context.Context, repo string) Condition {
 		// The exception's TYPE only: its text can carry the request, and the request carries the token.
 		return cond("Unknown", "CheckFailed", fmt.Sprintf("HEAD %s: %s", url, py.TypeName(err)))
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	switch {
 	case resp.StatusCode == 200:
 		return cond("True", "RepoFound", fmt.Sprintf("%s/%s exists", owner, name))

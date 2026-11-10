@@ -420,8 +420,8 @@ func (d *jsonDecoder) hex4() (rune, bool) {
 	if d.i+4 > len(d.s) {
 		return 0, false
 	}
-	n, err := strconv.ParseUint(d.s[d.i:d.i+4], 16, 32)
-	if err != nil {
+	n, err := strconv.ParseUint(d.s[d.i:d.i+4], 16, 16)
+	if err != nil || n > 0xffff {
 		return 0, false
 	}
 	d.i += 4

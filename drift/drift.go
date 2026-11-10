@@ -179,7 +179,7 @@ func fromYAML(v pyyaml.Value) any {
 }
 
 func readYAML(path string) (any, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- this repository's own values and allowlist files
 	if err != nil {
 		return nil, err
 	}

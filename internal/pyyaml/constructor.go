@@ -382,7 +382,7 @@ func a2bBase64(s string) ([]byte, string) {
 		if idx < 0 {
 			continue
 		}
-		v := byte(idx)
+		v := byte(idx & 0x3f) // idx < 64: a position in the base64 alphabet
 		pads = 0
 		switch quadPos {
 		case 0:

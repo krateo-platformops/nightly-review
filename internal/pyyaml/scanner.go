@@ -893,7 +893,7 @@ func (s *scanner) scanFlowScalarNonSpaces(double bool, chunks *strings.Builder) 
 					}
 				}
 				code, _ := strconv.ParseInt(s.prefix(n), 16, 64)
-				if code > 0x10FFFF {
+				if code < 0 || code > 0x10FFFF {
 					// chr() raises ValueError, which is not a YAMLError.
 					raise(pyErr("ValueError", "chr() arg not in range(0x110000)"))
 				}

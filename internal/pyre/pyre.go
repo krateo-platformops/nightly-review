@@ -213,7 +213,7 @@ func parseTemplate(t string) []tmplPart {
 		case n == 'g' && i+2 < len(t) && t[i+2] == '<':
 			end := strings.IndexByte(t[i+3:], '>')
 			var g int
-			fmt.Sscanf(t[i+3:i+3+end], "%d", &g)
+			_, _ = fmt.Sscanf(t[i+3:i+3+end], "%d", &g)
 			flush()
 			out = append(out, tmplPart{group: g})
 			i += 3 + end

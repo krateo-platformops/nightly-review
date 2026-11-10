@@ -910,13 +910,13 @@ func Found(excerpt, haystack string) bool {
 }
 
 // convKey is a citation as a conversation number: an int, or a float equal to one (3.0 == 3 in Python).
-func convKey(v any) (int, bool) {
+func convKey(v any) (int64, bool) {
 	switch x := v.(type) {
 	case int64:
-		return int(x), true
+		return x, true
 	case float64:
-		if x == math.Trunc(x) {
-			return int(x), true
+		if x == math.Trunc(x) && math.Abs(x) < 1<<53 {
+			return int64(x), true
 		}
 	}
 	return 0, false
@@ -933,20 +933,20 @@ func strOr(v any) string {
 // (assessment, unverified) where unverified counts the excerpts dropped because the transcript does not
 // contain them — and the patterns dropped because not one cited conversation exists.
 func Normalise(payload any, conversations []*Conversation, promptText string) (map[string]any, int) {
-	texts := map[int]string{}
+	texts := map[int64]string{}
 	for _, c := range conversations {
-		texts[c.Ordinal] = Norm(c.Text)
+		texts[int64(c.Ordinal)] = Norm(c.Text)
 	}
 	promptNorm := Norm(promptText)
 	unverified := 0
 
 	citesOf := func(item any, examples []any) []any {
-		set := map[int]any{}
+		set := map[int64]any{}
 		for _, o := range py.List(py.Get(item, "conversations")) {
 			if n, ok := o.(int64); ok {
-				if _, exists := texts[int(n)]; exists {
-					if _, dup := set[int(n)]; !dup {
-						set[int(n)] = o
+				if _, exists := texts[n]; exists {
+					if _, dup := set[n]; !dup {
+						set[n] = o
 					}
 				}
 			}
@@ -959,11 +959,11 @@ func Normalise(payload any, conversations []*Conversation, promptText string) (m
 				}
 			}
 		}
-		keys := make([]int, 0, len(set))
+		keys := make([]int64, 0, len(set))
 		for k := range set {
 			keys = append(keys, k)
 		}
-		sort.Ints(keys)
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 		out := make([]any, len(keys))
 		for i, k := range keys {
 			out[i] = set[k]
@@ -1134,7 +1134,7 @@ func Analyse(ctx context.Context, api kube.CustomObjects, core kube.ConfigMaps, 
 	}
 	census, err := conn.Run(ctx, CensusSQL, map[string]any{"frm": window.From, "to": window.To})
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return failed(err)
 	}
 	for _, r := range census {
@@ -1163,7 +1163,7 @@ func Analyse(ctx context.Context, api kube.CustomObjects, core kube.ConfigMaps, 
 		ids[i] = c.id
 	}
 	convs, shapes, err = ReadConversations(ctx, conn, window, ids, perAgent, 1)
-	conn.Close()
+	_ = conn.Close()
 	if err != nil {
 		return failed(err)
 	}

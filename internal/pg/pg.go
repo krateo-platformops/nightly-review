@@ -47,7 +47,7 @@ var Connect = func(ctx context.Context, p Params) (Conn, error) {
 	cctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 	if err := db.PingContext(cctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &conn{db: db, timeout: p.Timeout}, nil

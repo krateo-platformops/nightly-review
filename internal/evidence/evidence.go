@@ -293,7 +293,7 @@ var Post = func(ctx context.Context, body string, maxRows int) (string, error) {
 		return "", err
 	}
 	if err := httpx.RaiseForStatus(resp); err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "", err
 	}
 	return httpx.Text(resp)
@@ -696,7 +696,7 @@ func KagentSessions(ctx context.Context, api kube.CustomObjects, window prompt.W
 			questionsErr = py.Trunc(proposals.RedactString("questions: "+qerr.Error()), 300)
 		}
 	}
-	conn.Close()
+	_ = conn.Close()
 	if err != nil {
 		return nil, Stats{"ok": false, "error": py.Trunc(proposals.RedactString("session query: "+err.Error()), 300)}
 	}

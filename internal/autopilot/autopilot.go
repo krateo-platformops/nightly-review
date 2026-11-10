@@ -15,7 +15,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- uuid5 is defined over SHA-1 (RFC 9562); a context id, not a security use
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,7 +85,7 @@ var ServiceJWT = func(ctx context.Context) string {
 }
 
 func exchange(ctx context.Context) (string, error) {
-	raw, err := os.ReadFile(SATokenPath)
+	raw, err := os.ReadFile(SATokenPath) // #nosec G304 -- the projected token's path, from the chart's configuration
 	if err != nil {
 		return "", err
 	}
@@ -101,7 +101,7 @@ func exchange(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if err := httpx.RaiseForStatus(resp); err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "", err
 	}
 	text, err := httpx.Text(resp)
@@ -139,7 +139,7 @@ func ContextID(runName, scope string) string {
 }
 
 func uuid5(ns [16]byte, name string) string {
-	h := sha1.New()
+	h := sha1.New() // #nosec G401 -- uuid5 is defined over SHA-1 (RFC 9562); a context id, not a security use
 	h.Write(ns[:])
 	h.Write([]byte(name))
 	sum := h.Sum(nil)
@@ -313,7 +313,7 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 			// Stop READING rather than stop the agent: the task keeps running server-side and its session
 			// is still inspectable, but the run gets its window back and says why.
 			overran = true
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			break
 		}
 		if line == "" || !strings.HasPrefix(line, "data:") {

@@ -27,7 +27,7 @@ func Root() string {
 // Read returns a repository file's text (decompressed, for a .gz fixture).
 func Read(t testing.TB, rel string) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(Root(), rel))
+	b, err := os.ReadFile(filepath.Join(Root(), rel)) // #nosec G304 -- test helper reading this repository's files
 	if err != nil {
 		t.Fatal(err)
 	}
