@@ -1,0 +1,13 @@
+# ONE-OFF: commit 9c24f6d on the Go-port branch (feat/go-port, PR #51) carried the parity generator's fake,
+# credential-shaped test strings unfragmented; the branch's next commit fragments them with gitleaks:allow.
+# The org scan reads every branch's history, so these lines fail any PR until that branch is gone. The
+# fingerprints name only that superseded commit's lines, which never move; drop this file once the branch is
+# deleted after #51's squash merge.
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:81
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:83
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:92
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:93
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:95
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:97
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:generic-api-key:98
+9c24f6d30848dc81f9dc8d9fa042ddd3a76c6bb7:internal/parity/testdata/gen_fixtures.py:private-key:86
