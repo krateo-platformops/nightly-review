@@ -324,6 +324,16 @@ config:
       access-review-crd:   { repo: krateo-platformops/access-review, pathPrefix: docs }
       identity-lifecycle:  { repo: krateo-platformops/identity-lifecycle, pathPrefix: docs }
       identity-lifecycle-crd: { repo: krateo-platformops/identity-lifecycle, pathPrefix: docs }
+      # --- components the installer pins since 2026-11-11 (each checked against the repository's Chart.yaml,
+      # 2026-11-12). The keycloak blueprint publishes BOTH keycloak and keycloak-operator from its helm/<name>;
+      # keycloak-config-kog is krateo-keycloak-operator-kog's helm/keycloak-config-kog; the realm chart is its
+      # own repository's helm/krateo-keycloak-realm. krateo-capability-roles is one of saas' charts/<name>,
+      # published to oci://ghcr.io/krateo-platformops/krateo-saas.
+      keycloak:                { repo: krateo-blueprints/krateo-keycloak-blueprint, pathPrefix: docs }
+      keycloak-operator:       { repo: krateo-blueprints/krateo-keycloak-blueprint, pathPrefix: docs }
+      keycloak-config-kog:     { repo: krateo-blueprints/krateo-keycloak-operator-kog, pathPrefix: docs }
+      krateo-keycloak-realm:   { repo: krateo-blueprints/krateo-keycloak-realm, pathPrefix: docs }
+      krateo-capability-roles: { repo: krateo-platformops/saas, pathPrefix: docs }
     # A BLUEPRINT NOT LISTED ABOVE gets its source repository from the cluster, not from here: each run reads
     # the CompositionDefinitions, and a chart at oci://ghcr.io/<org>/charts/<name> is built from
     # github.com/<org>/<name> (the release convention; the Blueprint Builder names the repository after the
