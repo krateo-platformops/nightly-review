@@ -25,7 +25,10 @@ spec:
   description: Reads pre-gathered platform evidence and returns review proposals as JSON. Holds no tools.
   declarative:
     modelConfig: {{ .Values.reviewer.modelConfig | quote }}
-    runtime: python
+    # Go ADK, not python: kagent 0.10.1's python runtime copies every inbound A2A request header into
+    # session state, Authorization included, and persists it to kagent's Postgres (kagent-dev/kagent#3658)
+    # — here, the service's Krateo JWT on every nightly call. The Go runtime never persists headers.
+    runtime: go
     stream: true
     # The run-specific instructions arrive per call in the A2A request's `metadata.systemPrompt`.
     # This is the floor underneath them: the part that must hold even if a prompt is ever wrong.
