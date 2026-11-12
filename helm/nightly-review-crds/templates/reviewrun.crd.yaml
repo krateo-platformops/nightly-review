@@ -402,8 +402,9 @@ spec:
                 model:
                   type: object
                   description: >-
-                    Token usage THE AGENT REPORTED, from kagent's `kagent_usage_metadata` on the A2A
-                    stream. Absent when it reported none. Until 0.1.21 this was read from a key kagent
+                    Token usage THE AGENT REPORTED, from kagent's `kagent_usage_metadata` (python
+                    runtime) or `adk_usage_metadata` (Go runtime) on the A2A stream. Absent when it
+                    reported none. Until 0.1.21 this was read from a key kagent
                     never sends and written unconditionally, so every run carried zeros that looked like
                     a measurement. There is no model NAME: the A2A response does not carry one, and the
                     chart's configured ModelConfig is what was asked for, not what answered.

@@ -206,8 +206,18 @@ type Usage map[string]any
 // ADK event's usage into `metadata.kagent_usage_metadata` (promptTokenCount / candidatesTokenCount /
 // totalTokenCount) on each event that has it, and again on the final status update. The last one seen
 // is kept. NO MODEL NAME, because the response carries none.
+//
+// kagent's GO runtime, which the reviewer runs on since it stopped persisting the caller's Authorization
+// header (kagent-dev/kagent#3658), puts the same object under `metadata.adk_usage_metadata` instead, on the
+// event that carries the model's final turn (not on the final status update), and its OpenAI provider
+// fills only promptTokenCount / candidatesTokenCount — so totalTokens is absent there, never invented.
+// Measured on kind against kagent 0.10.1 golang-adk. Both keys are read; the python one wins if both exist.
 func TokenUsage(result any) Usage {
-	um := py.Get(py.Or(py.Get(result, "metadata"), map[string]any{}), "kagent_usage_metadata")
+	md := py.Or(py.Get(result, "metadata"), map[string]any{})
+	um := py.Get(md, "kagent_usage_metadata")
+	if !py.IsDict(um) {
+		um = py.Get(md, "adk_usage_metadata")
+	}
 	if !py.IsDict(um) {
 		return Usage{}
 	}
