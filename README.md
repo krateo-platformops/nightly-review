@@ -187,8 +187,9 @@ pinned. A failed fetch fails the job. The failure lists what to add.
   a healthy night and from a blind one look identical and mean opposite things.
   **`PartiallyCompleted` is its own phase** for a run where some source failed.
 - **Token usage is recorded only when the agent reports it** (`kagent_usage_metadata` on the A2A
-  stream). It is absent otherwise, never zeros. There is no model name: the response does not carry
-  one.
+  stream from kagent's python runtime, `adk_usage_metadata` from its Go runtime, which the reviewer
+  runs on). It is absent otherwise, never zeros; the Go runtime's OpenAI provider reports no total, so
+  `totalTokens` is absent there. There is no model name: the response does not carry one.
 
 ## Reading the platform
 

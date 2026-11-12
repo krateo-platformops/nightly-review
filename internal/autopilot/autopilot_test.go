@@ -137,6 +137,31 @@ func TestTokenUsageIsReadWhereKagentActuallyPutsIt(t *testing.T) {
 	}
 }
 
+// The Go runtime (kagent 0.10.1 golang-adk) names the key adk_usage_metadata and, through its OpenAI provider,
+// reports no total. The total stays absent rather than being summed here: it is what the agent reported.
+func TestTokenUsageIsReadWhereTheGoRuntimePutsIt(t *testing.T) {
+	result := map[string]any{"metadata": map[string]any{"adk_usage_metadata": map[string]any{
+		"promptTokenCount": int64(111), "candidatesTokenCount": int64(22)}}}
+	if got := A.TokenUsage(result); !reflect.DeepEqual(map[string]any(got), map[string]any{"inputTokens": int64(111),
+		"outputTokens": int64(22)}) {
+		t.Fatal(got)
+	}
+}
+
+// The shape measured from golang-adk on message/stream: usage rides the working event that carries the model's
+// final turn; the artifact and the final completed status carry none, and must not erase it.
+func TestAskKeepsTheGoRuntimesUsageAcrossTheFinalEvents(t *testing.T) {
+	serve(t, lines(`data: {"result": {"kind": "status-update", "status": {"state": "working"}, "metadata": {"adk_partial": true}}}`,
+		`data: {"result": {"kind": "status-update", "status": {"state": "working", "message": {"parts": [{"kind": "text", "text": "{\"proposals\": []}"}]}}, `+
+			`"metadata": {"adk_usage_metadata": {"promptTokenCount": 111, "candidatesTokenCount": 22}}}}`,
+		`data: {"result": {"kind": "artifact-update", "artifact": {"parts": [{"kind": "text", "text": "{\"proposals\": []}"}]}}}`,
+		`data: {"result": {"kind": "status-update", "final": true, "status": {"state": "completed"}, "metadata": {"adk_app_name": "x"}}}`), nil)
+	_, _, usage, err := A.Ask(context.Background(), "sys", "msg", "rr-go-usage", "", "", 0)
+	if err != nil || !reflect.DeepEqual(map[string]any(usage), map[string]any{"inputTokens": int64(111), "outputTokens": int64(22)}) {
+		t.Fatal(usage, err)
+	}
+}
+
 func TestNoUsageIsEmptyNotZeros(t *testing.T) {
 	if len(A.TokenUsage(map[string]any{"usage": map[string]any{"inputTokens": int64(5)}})) != 0 ||
 		len(A.TokenUsage(map[string]any{})) != 0 {
