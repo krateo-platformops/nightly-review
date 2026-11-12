@@ -26,13 +26,22 @@ unmapped:
   external-dns: >-
     Upstream external-dns (registry.k8s.io image), wrapper chart published to
     oci://ghcr.io/krateo-blueprints/charts with no source repository found.
+  cloudnative-pg: >-
+    The upstream CloudNativePG operator chart, pinned straight from oci://ghcr.io/cloudnative-pg/charts
+    (no Krateo wrapper, checked 2026-11-12). A finding about the upstream operator is not a pull request
+    this platform can open; the Clusters Krateo components define are in those components' charts.
+  external-secrets: >-
+    The upstream External Secrets Operator chart, pinned straight from oci://ghcr.io/external-secrets/charts
+    (no Krateo wrapper, checked 2026-11-12). Same reason as cloudnative-pg: the ExternalSecrets Krateo
+    components define are in those components' charts.
 
 # NOT INSTALLER COMPONENTS, deliberately unmapped too. The drift check cannot see these (the pins do not
 # name them), so they are recorded here to keep every unmapped decision in one reviewed place; a finding
 # about one of them records NoDestination. Only the reason is checked. Keys may be globs.
 notPinned:
   tk-swarm-ro: >-
-    A hand-applied benchmark probe Agent (no labels, no chart, no repository); not product.
+    A hand-applied benchmark probe Agent (no labels, no chart, no repository); not product. Deleted from
+    krateo-057 on 2026-11-12, kept here while its past sessions and logs can still be reviewed.
   "*-bench": >-
     Benchmark profiles of product agents (autopilot-bench, incident-agent-bench, k8s-agent-bench,
     helm-agent-bench). Product content is not derived from benchmark traffic, and the analysis excludes
