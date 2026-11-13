@@ -60,6 +60,12 @@ def main(chart, prefix="", sakey=None):
         for ph in ("CHART_VERSION", "APP_VERSION", "SOURCE_REF"):
             s = s.replace(ph, "0.0.0")
         open(p, "w").write(s)
+        # Charts that pull krateo-agent-lib at lint/release time (charts/ gitignored) need it built;
+        # charts that vendor it already have charts/. Needs a registry login for a private repo.
+        if "\ndependencies:" in s and not os.path.isdir(os.path.join(c, "charts")):
+            r = subprocess.run(["helm", "dependency", "build", c], capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit(f"helm dependency build failed:\n{r.stderr}")
 
         def render(values=None, check=True):
             cmd = ["helm", "template", "smoke", c]
