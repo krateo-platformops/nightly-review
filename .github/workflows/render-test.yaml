@@ -1,0 +1,36 @@
+# PR-time render test for the reviewer Agent this chart ships: its ServiceAccount annotations
+# (reviewer.serviceAccount.annotations -> spec.declarative.deployment.serviceAccountConfig.annotations)
+# render only when set, at the right depth, on a kagent.dev/v1alpha2 Agent, and the default render
+# carries no deployment block (hack/test-sa-annotations.py says why, and what it renders).
+#
+# This repo has no chart lint workflow, so this is also the only CI step that renders the chart at all.
+# The chart has no dependencies, so no registry login. NO PATH FILTER, so it can be made a required
+# check without leaving unrelated PRs waiting on it.
+name: render-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sa-annotations:
+    name: Reviewer ServiceAccount annotations render only when set
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: serviceAccountConfig renders as specified
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 hack/test-sa-annotations.py helm/nightly-review --prefix reviewer

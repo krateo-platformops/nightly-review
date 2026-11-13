@@ -30,6 +30,12 @@ spec:
     # — here, the service's Krateo JWT on every nightly call. The Go runtime never persists headers.
     runtime: go
     stream: true
+{{- /* The reviewer's ServiceAccount annotations (reviewer.serviceAccount.annotations; _helpers.tpl
+       says why). Wrapped in `with` so an unset map renders no `deployment:` block at all. */}}
+{{- with include "nightly-review.serviceAccountConfig" . }}
+    deployment:
+      {{- . | nindent 6 }}
+{{- end }}
     # The run-specific instructions arrive per call in the A2A request's `metadata.systemPrompt`.
     # This is the floor underneath them: the part that must hold even if a prompt is ever wrong.
     systemMessage: |-

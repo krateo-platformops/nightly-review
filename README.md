@@ -325,6 +325,8 @@ request converter uses `message.parts` only), so until this release the main rev
 See `helm/nightly-review/values.yaml`, and `values.schema.json`, whose defaults are what the installer
 applies. The values that matter: `clickhouseQueries` (the reviewable surface; adapt them to your
 schema), `secrets.kagentDb` (the narrow Postgres role), `reviewer.modelConfig`,
+`reviewer.serviceAccount.annotations` (stamped by kagent on the reviewer Agent's own ServiceAccount, e.g.
+GKE Workload Identity; not this chart's CronJob ServiceAccount; empty renders nothing),
 `config.targetCheckApiUrl` (empty disables the existence check), `config.targetCheck.tokenSecret`
 (the credential for it; empty name = anonymous), `config.targets` (destinations per kind, which win), `config.destinations.components` (destinations
 per subject component; see *Where proposals land*), `config.agentAnalysis` (the per-agent
