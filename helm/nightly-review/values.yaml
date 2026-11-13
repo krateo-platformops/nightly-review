@@ -334,6 +334,11 @@ config:
       keycloak-config-kog:     { repo: krateo-blueprints/krateo-keycloak-operator-kog, pathPrefix: docs }
       krateo-keycloak-realm:   { repo: krateo-blueprints/krateo-keycloak-realm, pathPrefix: docs }
       krateo-capability-roles: { repo: krateo-platformops/saas, pathPrefix: docs }
+      # --- pinned since 2026-11-13 (checked against the repository's Chart.yaml, 2026-11-13). The openstack
+      # blueprint repository publishes openstack-capabilities from blueprints/openstack/capabilities/, a
+      # per-cluster chart installed with helm (no CompositionDefinition), so the cluster cannot name its
+      # repository and it needs this entry. Its values are generated from the umbrella in the same repository.
+      openstack-capabilities:  { repo: krateo-blueprints/krateo-openstack-blueprint, pathPrefix: docs }
     # A BLUEPRINT NOT LISTED ABOVE gets its source repository from the cluster, not from here: each run reads
     # the CompositionDefinitions, and a chart at oci://ghcr.io/<org>/charts/<name> is built from
     # github.com/<org>/<name> (the release convention; the Blueprint Builder names the repository after the
