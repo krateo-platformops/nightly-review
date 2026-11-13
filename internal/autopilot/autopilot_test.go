@@ -199,3 +199,56 @@ func TestTheInstructionsTravelInTheMessageBecauseKagentDropsMetadata(t *testing.
 		t.Fatal(msg["contextId"])
 	}
 }
+
+// rr-20261113-0911, reduced. The evidence we send embeds a JSON object of its own; the model's final
+// reply is JSON with ONE invalid escape. The old reader fell back to our echoed message, parsed the
+// evidence, and reported "no proposals array" with an excerpt of our own prompt.
+const evidenceMsg = "Review window: 2026-11-12 .. 2026-11-13 (UTC)\nSources that answered: clickhouse\n" +
+	`{"source": "clickhouse", "rows": [{"service": "x", "n": 3}]}`
+
+func sse(event map[string]any) string {
+	b, _ := json.Marshal(event)
+	return "data: " + string(b)
+}
+
+func status(state, role, text string) map[string]any {
+	msg := map[string]any{"parts": []any{map[string]any{"kind": "text", "text": text}}}
+	if role != "" {
+		msg["role"] = role
+	}
+	return map[string]any{"result": map[string]any{"status": map[string]any{"state": state, "message": msg}}}
+}
+
+func TestTheRequestEchoedBackIsNeverTheAnswer(t *testing.T) {
+	badReply := `{"summary": "s", "proposals": [{"evidence": "matched a\.b in the log"}]}`
+	serve(t, lines(
+		sse(status("working", "user", evidenceMsg)),
+		sse(status("completed", "agent", badReply))), nil)
+	obj, raw, _, err := A.Ask(context.Background(), "sys", evidenceMsg, "rr-echo", "", "", 0)
+	if err == nil {
+		t.Fatalf("the echoed request was taken as the answer: %v (raw begins %q)", py.Plain(obj), py.Trunc(raw, 40))
+	}
+	if !strings.Contains(err.Error(), "not valid JSON") || !strings.Contains(strings.ToLower(err.Error()), "escape") {
+		t.Fatalf("the error must be the reply's own parse error, got: %v", err)
+	}
+}
+
+func TestAnEchoWithoutARoleIsStillNotTheAnswer(t *testing.T) {
+	// The same echo arriving as an artifact with no role: matched by its text, not its role.
+	echo := map[string]any{"result": map[string]any{"artifact": map[string]any{
+		"parts": []any{map[string]any{"kind": "text", "text": evidenceMsg}}}}}
+	serve(t, lines(sse(echo), sse(status("completed", "agent", `{"proposals": [`))), nil)
+	if obj, _, _, err := A.Ask(context.Background(), "sys", evidenceMsg, "rr-echo2", "", "", 0); err == nil {
+		t.Fatalf("an unroled echo of the request was taken as the answer: %v", py.Plain(obj))
+	}
+}
+
+func TestAValidReplyAfterTheEchoIsTheAnswer(t *testing.T) {
+	serve(t, lines(
+		sse(status("working", "user", evidenceMsg)),
+		sse(status("completed", "agent", `{"proposals": []}`))), nil)
+	obj, _, _, err := A.Ask(context.Background(), "sys", evidenceMsg, "rr-echo3", "", "", 0)
+	if err != nil || !reflect.DeepEqual(py.Plain(obj), empty) {
+		t.Fatal(obj, err)
+	}
+}
