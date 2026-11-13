@@ -254,6 +254,8 @@ var Ask = func(ctx context.Context, system, userMessage, runName, token, scope s
 }
 
 func ask(ctx context.Context, system, userMessage, runName, token, scope string, timeout int) (any, string, Usage, error) {
+	// The two texts we send. Kept so an echo of them can never be mistaken for the answer (below).
+	sentTexts := []string{"INSTRUCTIONS\n\n" + system, userMessage}
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      uuid4(),
@@ -261,8 +263,8 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 		"params": map[string]any{
 			"message": map[string]any{
 				"role": "user",
-				"parts": []any{map[string]any{"kind": "text", "text": "INSTRUCTIONS\n\n" + system},
-					map[string]any{"kind": "text", "text": userMessage}},
+				"parts": []any{map[string]any{"kind": "text", "text": sentTexts[0]},
+					map[string]any{"kind": "text", "text": sentTexts[1]}},
 				"messageId": uuid4(),
 				"contextId": ContextID(runName, scope),
 			},
@@ -294,11 +296,29 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 	// WHERE THE ANSWER ACTUALLY IS. kagent's A2A executor does not send `result.message.parts`; it sends
 	// TaskStatusUpdateEvents carrying `result.status.message.parts`, artifact events carrying
 	// `result.artifact.parts`, and a final task snapshot carrying `result.history[]`.
+	//
+	// THE REQUEST IS NEVER THE ANSWER. The stream also carries our own message back (role "user"), and the
+	// evidence we send embeds JSON objects of its own. When the model's reply failed to parse, the reader
+	// used to fall through to that echo, parse the evidence, and report "response has no `proposals`
+	// array" with an excerpt of OUR prompt, which reads exactly like a model that answered in prose
+	// (rr-20261113-0911: the model had answered in JSON with one invalid escape). So a container whose
+	// role is "user" is skipped wherever it appears, and so is any text identical to one we sent, in case
+	// an echo arrives without a role.
+	sent := map[string]bool{}
+	for _, t := range sentTexts {
+		sent[t] = true
+	}
 	texts := func(container any) []string {
 		var out []string
-		for _, p := range py.List(py.Get(py.Or(container, map[string]any{}), "parts")) {
+		c := py.Or(container, map[string]any{})
+		if py.Get(c, "role") == "user" {
+			return nil
+		}
+		for _, p := range py.List(py.Get(c, "parts")) {
 			if py.Get(p, "kind") == "text" && py.Truthy(py.Get(p, "text")) {
-				out = append(out, py.Str(py.Get(p, "text")))
+				if t := py.Str(py.Get(p, "text")); !sent[t] {
+					out = append(out, t)
+				}
 			}
 		}
 		return out
@@ -350,9 +370,7 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 		candidates = append(candidates, texts(py.Get(result, "message"))...)
 		candidates = append(candidates, texts(result)...)
 		for _, msg := range py.List(py.Get(result, "history")) {
-			if py.Get(msg, "role") != "user" {
-				candidates = append(candidates, texts(msg)...)
-			}
+			candidates = append(candidates, texts(msg)...)
 		}
 		if found := TokenUsage(result); len(found) > 0 {
 			usage = found
@@ -402,13 +420,16 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 			ordered = append(ordered, c)
 		}
 	}
-	var lastErr error
-	for _, c := range ordered {
+	// The newest candidate is the model's final turn; its parse error is the one worth reporting.
+	var newestErr error
+	for i, c := range ordered {
 		v, err := ExtractJSON(c)
 		if err == nil {
 			return v, c, usage, nil
 		}
-		lastErr = err
+		if i == 0 {
+			newestErr = err
+		}
 	}
 
 	// LAST RESORT, for a long answer streamed as fragments. Joining in arrival order is wrong as a FIRST
@@ -423,9 +444,8 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 	if overran {
 		overrun = fmt.Sprintf("A2A deadline exceeded after %ds; ", budget)
 	}
-	_ = lastErr
-	return nil, "", nil, py.Errorf("ValueError", "%sno JSON object in %d candidates nor in their concatenation (%d chars; last error: %s)",
-		overrun, len(ordered), py.Len(joined), err)
+	return nil, "", nil, py.Errorf("ValueError", "%sthe agent's reply is not valid JSON: %s (newest of %d candidates, %d chars; their concatenation: %s)",
+		overrun, newestErr, len(ordered), py.Len(ordered[0]), err)
 }
 
 // lineReader yields the stream's lines as requests' iter_lines(decode_unicode=True) did: the body is
