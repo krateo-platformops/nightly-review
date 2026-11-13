@@ -86,6 +86,16 @@ reviewer:
   create: true
   name: nightly-review-agent
   modelConfig: gemini-flash    # must name a kagent ModelConfig in this namespace
+  # Annotations for the ServiceAccount kagent creates for the reviewer Agent (named after it:
+  # nightly-review-agent). NOT this chart's own ServiceAccount (templates/rbac.yaml), which the CronJob
+  # runs as. kagent owns the Agent's ServiceAccount, so the map travels on the Agent spec
+  # (spec.declarative.deployment.serviceAccountConfig.annotations) and the kagent controller stamps it.
+  # The motivating case is GKE Workload Identity for the reviewer's model calls:
+  #   annotations:
+  #     iam.gke.io/gcp-service-account: <gsa>@<project>.iam.gserviceaccount.com
+  # Empty (the default) renders nothing: byte-identical to a chart without this key.
+  serviceAccount:
+    annotations: {}
 
 config:
   authnUrl: ""                 # enables the SA -> Krateo JWT exchange; required for kagent sessions

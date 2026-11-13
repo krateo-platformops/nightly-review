@@ -487,6 +487,20 @@
         "modelConfig": {
           "type": "string",
           "minLength": 1
+        },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The ServiceAccount kagent creates for the reviewer Agent (named after it), not this chart's own ServiceAccount. Its annotations travel on the Agent spec as spec.declarative.deployment.serviceAccountConfig.annotations.",
+          "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Annotations for the reviewer Agent's ServiceAccount, e.g. iam.gke.io/gcp-service-account for GKE Workload Identity. Empty renders nothing."
+            }
+          }
         }
       }
     },
