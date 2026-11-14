@@ -501,6 +501,26 @@
               "description": "Annotations for the reviewer Agent's ServiceAccount, e.g. iam.gke.io/gcp-service-account for GKE Workload Identity. Empty renders nothing."
             }
           }
+        },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The agent gateway through which the CronJob reaches the reviewer this chart creates: http://<service>.<namespace>.svc:<port>/ with x-kagent-host <reviewer.name>.<release namespace>. Ignored when config.reviewerA2aUrl is set.",
+          "properties": {
+            "service": {
+              "type": "string",
+              "minLength": 1
+            },
+            "namespace": {
+              "type": "string",
+              "description": "Empty means this release's namespace."
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
         }
       }
     },

@@ -96,10 +96,26 @@ reviewer:
   # Empty (the default) renders nothing: byte-identical to a chart without this key.
   serviceAccount:
     annotations: {}
+  # HOW THE CRONJOB REACHES THE REVIEWER IT CREATES: through the agent gateway, never by dialling the
+  # agent's Service. agentgateway-policies' NetworkPolicy admits an agent pod's port only from the kagent
+  # controller and the gateway pods, so a direct dial works only on a cluster that does not enforce
+  # NetworkPolicy. The CronJob posts to http://<service>.<namespace>.svc:<port>/ with
+  # `x-kagent-host: <reviewer.name>.<release namespace>`, the routing key of the gateway's sub-agent
+  # HTTPRoutes, and with the Krateo JWT from config.authnUrl, which the gateway's authorization requires.
+  # The route exists only once the reviewer is registered as a sub-agent (the installer does this for
+  # nightly-review). Without config.authnUrl the run fails, saying so, rather than calling the gateway
+  # unauthenticated. To bypass the gateway (a cluster without one), set config.reviewerA2aUrl, which
+  # always wins and sends no routing header.
+  gateway:
+    service: krateo-agent-gateway
+    namespace: ""              # empty -> this release's namespace
+    port: 8080
 
 config:
   authnUrl: ""                 # enables the SA -> Krateo JWT exchange; required for kagent sessions
-  reviewerA2aUrl: ""           # empty -> the agent this chart creates. Set it to point elsewhere.
+                               # and for reaching the reviewer through the agent gateway
+  reviewerA2aUrl: ""           # empty -> the agent this chart creates, through the agent gateway
+                               # (reviewer.gateway). Set it to dial an A2A endpoint directly instead.
   autopilotA2aUrl: ""          # DEPRECATED alias for reviewerA2aUrl, honoured so existing values files
                                # keep working. Asking an ORCHESTRATOR to review is what this release
                                # stops doing; see templates/agent.yaml.
