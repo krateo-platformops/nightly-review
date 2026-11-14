@@ -43,12 +43,25 @@ import (
 // wall-clock budget for one Ask() — enforced in the read loop — and A2AReadTimeout is the separate, much
 // shorter allowance for silence.
 var (
-	AutopilotA2A   = env.Str("AUTOPILOT_A2A_URL", "http://krateo-autopilot.krateo-system.svc:8080/")
-	AuthnURL       = env.Str("AUTHN_URL", "")
-	SATokenPath    = env.Str("SA_TOKEN_PATH", "/var/run/secrets/krateo/authn/token")
-	A2ATimeout     = env.Int("A2A_TIMEOUT", "900")      // total budget for one Ask(), seconds
-	A2AReadTimeout = env.Int("A2A_READ_TIMEOUT", "180") // max silence BETWEEN events, seconds
+	AutopilotA2A = env.Str("AUTOPILOT_A2A_URL", "http://krateo-autopilot.krateo-system.svc:8080/")
+	// AutopilotA2AHost names the agent BEHIND the agent gateway. When it is set, AutopilotA2A is the
+	// gateway's address and this value travels as `x-kagent-host`, the only routing key of
+	// agentgateway-policies' sub-agent HTTPRoutes ("<agent>.<namespace>"). It exists because the agents'
+	// NetworkPolicy admits an agent pod's port only from the kagent controller and the gateway, so a
+	// direct dial to the agent's Service works only on a cluster that does not enforce NetworkPolicy.
+	// Empty means AutopilotA2A is dialled as it is, with no header.
+	AutopilotA2AHost = env.Str("AUTOPILOT_A2A_HOST", "")
+	AuthnURL         = env.Str("AUTHN_URL", "")
+	SATokenPath      = env.Str("SA_TOKEN_PATH", "/var/run/secrets/krateo/authn/token")
+	A2ATimeout       = env.Int("A2A_TIMEOUT", "900")      // total budget for one Ask(), seconds
+	A2AReadTimeout   = env.Int("A2A_READ_TIMEOUT", "180") // max silence BETWEEN events, seconds
 )
+
+// ErrGatewayNeedsToken is returned instead of calling the gateway without a Krateo JWT. The gateway's
+// authorization admits a sub-agent route only with `has(jwt.sub)`, so that request could only come back
+// 403, and the run would report the gateway's refusal rather than the cause: no service JWT, because
+// config.authnUrl is unset or the exchange failed (the exchange logs which).
+var ErrGatewayNeedsToken = errors.New("the agent gateway admits A2A only with a Krateo JWT, and the service-JWT exchange returned none: set config.authnUrl, or check the [authn] log line above")
 
 // namespace is the stable UUID namespace for this component's context ids.
 var namespace = [16]byte{0x6f, 0x1a, 0x1f, 0x4e, 0x0b, 0x1a, 0x4a, 0x2e, 0x9f, 0x7c, 0x2c, 0x1d, 0x5f, 0x0b, 0x9a, 0x31}
@@ -274,6 +287,9 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 	if budget == 0 {
 		budget = A2ATimeout
 	}
+	if AutopilotA2AHost != "" && token == "" {
+		return nil, "", nil, ErrGatewayNeedsToken
+	}
 	deadline := time.Now().Add(time.Duration(budget) * time.Second)
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, AutopilotA2A, bytes.NewReader(body))
@@ -283,6 +299,9 @@ func ask(ctx context.Context, system, userMessage, runName, token, scope string,
 	req.Header.Set("content-type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if AutopilotA2AHost != "" {
+		req.Header.Set("x-kagent-host", AutopilotA2AHost)
 	}
 	resp, err := HTTPClient.Do(req)
 	if err != nil {

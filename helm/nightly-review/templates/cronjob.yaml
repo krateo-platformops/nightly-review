@@ -55,11 +55,20 @@ spec:
                 # the upgrade pointing straight back at the orchestrator this release exists to stop
                 # calling: a fix that renders, deploys, and changes nothing. The alias is only consulted
                 # when no reviewer is being created, which is the one case it still means something.
+                #
+                # A reviewer this chart creates is reached THROUGH THE AGENT GATEWAY (values.yaml,
+                # reviewer.gateway): the gateway's address, plus AUTOPILOT_A2A_HOST naming the agent
+                # behind it. Dialling the agent's own Service is blocked by agentgateway-policies'
+                # NetworkPolicy wherever NetworkPolicy is enforced. The other two branches dial their
+                # URL as given, with no routing header.
+                {{- $gw := .Values.reviewer.gateway | default dict }}
                 - name: AUTOPILOT_A2A_URL
                   {{- if .Values.config.reviewerA2aUrl }}
                   value: {{ .Values.config.reviewerA2aUrl | quote }}
                   {{- else if .Values.reviewer.create }}
-                  value: {{ printf "http://%s.%s.svc:8080/" .Values.reviewer.name .Release.Namespace | quote }}
+                  value: {{ printf "http://%s.%s.svc:%v/" ($gw.service | default "krateo-agent-gateway") ($gw.namespace | default .Release.Namespace) ($gw.port | default 8080) | quote }}
+                - name: AUTOPILOT_A2A_HOST
+                  value: {{ printf "%s.%s" .Values.reviewer.name .Release.Namespace | quote }}
                   {{- else }}
                   value: {{ required "config.reviewerA2aUrl is required when reviewer.create is false" .Values.config.autopilotA2aUrl | quote }}
                   {{- end }}

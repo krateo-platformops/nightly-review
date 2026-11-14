@@ -34,3 +34,24 @@ jobs:
           set -euo pipefail
           python3 -m pip install --quiet pyyaml
           python3 hack/test-sa-annotations.py helm/nightly-review --prefix reviewer
+
+  reviewer-path:
+    # A reviewer this chart creates is reached through the agent gateway, never by dialling its own
+    # Service, which agentgateway-policies' NetworkPolicy blocks wherever NetworkPolicy is enforced
+    # (hack/test-reviewer-path.py says what it renders).
+    name: The CronJob reaches the reviewer through the agent gateway
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: AUTOPILOT_A2A_URL / AUTOPILOT_A2A_HOST render as specified
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 hack/test-reviewer-path.py helm/nightly-review

@@ -7,6 +7,7 @@ package autopilot_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -250,5 +251,59 @@ func TestAValidReplyAfterTheEchoIsTheAnswer(t *testing.T) {
 	obj, _, _, err := A.Ask(context.Background(), "sys", evidenceMsg, "rr-echo3", "", "", 0)
 	if err != nil || !reflect.DeepEqual(py.Plain(obj), empty) {
 		t.Fatal(obj, err)
+	}
+}
+
+// THROUGH THE AGENT GATEWAY. The agents' NetworkPolicy admits an agent's port only from the kagent
+// controller and the gateway, so the reviewer is reached through the gateway, which routes by
+// `x-kagent-host` and admits a sub-agent route only with a Krateo JWT.
+
+// gatewayAt stands in for the gateway, recording each request it receives.
+func gatewayAt(t *testing.T, host string) *[]*http.Request {
+	t.Helper()
+	savedHost, savedClient := A.AutopilotA2AHost, A.HTTPClient
+	A.AutopilotA2AHost = host
+	got := &[]*http.Request{}
+	A.HTTPClient = fake.Client(func(r *http.Request) (*http.Response, error) {
+		*got = append(*got, r)
+		return &http.Response{StatusCode: 200, Status: "200 OK", Header: http.Header{}, Request: r,
+			Body: lines(`data: {"result": {"status": {"state": "completed", "message": {"parts": [{"kind": "text", "text": "{\"proposals\": []}"}]}}}}`)}, nil
+	})
+	t.Cleanup(func() { A.AutopilotA2AHost, A.HTTPClient = savedHost, savedClient })
+	return got
+}
+
+func TestTheGatewayIsToldWhichAgentAndWhoIsAsking(t *testing.T) {
+	got := gatewayAt(t, "nightly-review-agent.krateo-system")
+	if _, _, _, err := A.Ask(context.Background(), "sys", "msg", "rr-gw", "service-jwt", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("%d requests", len(*got))
+	}
+	h := (*got)[0].Header
+	if h.Get("x-kagent-host") != "nightly-review-agent.krateo-system" || h.Get("Authorization") != "Bearer service-jwt" {
+		t.Fatal(h)
+	}
+}
+
+func TestWithoutAServiceJWTTheGatewayIsNeverCalled(t *testing.T) {
+	got := gatewayAt(t, "nightly-review-agent.krateo-system")
+	_, _, _, err := A.Ask(context.Background(), "sys", "msg", "rr-gw", "", "", 0)
+	if !errors.Is(err, A.ErrGatewayNeedsToken) || !strings.Contains(err.Error(), "config.authnUrl") {
+		t.Fatalf("got %v", err)
+	}
+	if len(*got) != 0 {
+		t.Fatal("a request the gateway can only refuse must not be sent")
+	}
+}
+
+func TestADirectURLGetsNoRoutingHeaderAndNeedsNoToken(t *testing.T) {
+	got := gatewayAt(t, "")
+	if _, _, _, err := A.Ask(context.Background(), "sys", "msg", "rr-direct", "", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 || (*got)[0].Header.Get("x-kagent-host") != "" || (*got)[0].Header.Get("Authorization") != "" {
+		t.Fatal((*got)[0].Header)
 	}
 }
