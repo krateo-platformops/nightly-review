@@ -299,6 +299,16 @@ config:
       # Chart.yaml `sources:`. Searching for a repo per CHART, or by the installer's COMPONENT name,
       # returns 404 and reads as "no source repository" — which is how these two were wrongly recorded
       # as unmapped in #46. Verified 2026-10-07: repo public, charts pull at 0.1.2, cluster agrees.
+      # --- the edge and internal-TLS wrapper charts: all BUILT by krateo-blueprints/ingress-blueprint (one
+      # directory per chart; its tags 0.10.0/0.16.0/0.17.0/0.18.0 are the pinned chart versions, checked
+      # 2026-11-17). Proposals land in the chart's own directory.
+      gateway-api-crds:      { repo: krateo-blueprints/ingress-blueprint, pathPrefix: gateway-api-crds }
+      agentgateway:          { repo: krateo-blueprints/ingress-blueprint, pathPrefix: agentgateway }
+      cert-manager:          { repo: krateo-blueprints/ingress-blueprint, pathPrefix: cert-manager }
+      cert-manager-issuers:  { repo: krateo-blueprints/ingress-blueprint, pathPrefix: cert-manager-issuers }
+      external-dns:          { repo: krateo-blueprints/ingress-blueprint, pathPrefix: external-dns }
+      trust-manager:         { repo: krateo-blueprints/ingress-blueprint, pathPrefix: trust-manager }
+      internal-ca-bundle:    { repo: krateo-blueprints/ingress-blueprint, pathPrefix: internal-ca-bundle }
       gcp-configconnector:     { repo: krateo-blueprints/krateo-gcp-blueprint, pathPrefix: docs }
       gcp-configconnector-crd: { repo: krateo-blueprints/krateo-gcp-blueprint, pathPrefix: docs }
       kagent-crds:         { repo: krateo-agentiko/kagent, pathPrefix: docs }
