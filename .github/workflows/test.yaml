@@ -29,3 +29,5 @@ jobs:
         run: go vet ./... && go vet -tags drift ./drift/
       - name: Test
         run: go test ./...
+      - name: public text
+        run: hack/check-public-text.sh
