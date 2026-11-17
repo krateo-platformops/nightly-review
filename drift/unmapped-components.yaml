@@ -9,23 +9,6 @@
 # A line here is a decision, not a default: it needs a reason, it is an error for a component that also
 # has an entry, and it is an error for a component the installer no longer pins (the review is stale).
 unmapped:
-  gateway-api-crds: >-
-    Upstream Gateway API CRDs, wrapped as a chart published to oci://ghcr.io/krateo-blueprints/charts.
-    No source repository for the wrapper exists in krateo-blueprints (checked 2026-09-30); a finding about
-    upstream CRDs is not a pull request this platform can open.
-  agentgateway: >-
-    Upstream agentgateway (cr.agentgateway.dev images), wrapper chart published to
-    oci://ghcr.io/krateo-blueprints/charts with no source repository found. Findings about the gateway's
-    configuration belong to agentgateway-policies / krateo-agent-gateway, which are mapped.
-  cert-manager: >-
-    Upstream cert-manager (quay.io/jetstack images), wrapper chart published to
-    oci://ghcr.io/krateo-blueprints/charts with no source repository found.
-  cert-manager-issuers: >-
-    Issuer manifests for cert-manager, wrapper chart published to oci://ghcr.io/krateo-blueprints/charts
-    with no source repository found.
-  external-dns: >-
-    Upstream external-dns (registry.k8s.io image), wrapper chart published to
-    oci://ghcr.io/krateo-blueprints/charts with no source repository found.
   cloudnative-pg: >-
     The upstream CloudNativePG operator chart, pinned straight from oci://ghcr.io/cloudnative-pg/charts
     (no Krateo wrapper, checked 2026-11-12). A finding about the upstream operator is not a pull request
@@ -34,6 +17,9 @@ unmapped:
     The upstream External Secrets Operator chart, pinned straight from oci://ghcr.io/external-secrets/charts
     (no Krateo wrapper, checked 2026-11-12). Same reason as cloudnative-pg: the ExternalSecrets Krateo
     components define are in those components' charts.
+  kyverno: >-
+    The upstream Kyverno chart, pinned straight from oci://ghcr.io/kyverno/charts (3.9.2). This platform
+    never opens issues or pull requests upstream; a finding about Kyverno itself is not one it files.
 
 # NOT INSTALLER COMPONENTS, deliberately unmapped too. The drift check cannot see these (the pins do not
 # name them), so they are recorded here to keep every unmapped decision in one reviewed place; a finding
