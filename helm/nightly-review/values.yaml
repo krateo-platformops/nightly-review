@@ -332,6 +332,7 @@ config:
       service-desk-page:   { repo: krateo-platformops/portal, pathPrefix: docs }
       incidents-page:      { repo: krateo-platformops/portal, pathPrefix: docs }
       alerts-page:         { repo: krateo-platformops/portal, pathPrefix: docs }
+      public-pages:        { repo: krateo-platformops/portal, pathPrefix: docs }
       dashboard-page:      { repo: krateo-platformops/portal, pathPrefix: docs }
       compositions-page:   { repo: krateo-platformops/portal, pathPrefix: docs }
       blueprints-page:     { repo: krateo-platformops/portal, pathPrefix: docs }
