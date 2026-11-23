@@ -17,13 +17,21 @@ on:
       app_version:
         description: "App image version (APP_VERSION). Default: latest tag of the app repo."
         required: false
+      dry_run:
+        description: "Rehearse: run every check and push nothing. Untick to publish from a manual run."
+        type: boolean
+        default: true
 
 jobs:
   release-oci:
-    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@f6185ef0a8161a4201217d6ce0953718fc736fe0 # 1.1.0
+    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@7da11cb60cee5cbfc7d9e8c9328692807b43cefd # 2.0.0
     permissions:
       contents: read
       packages: write
     with:
       chart_version: ${{ github.event.inputs.chart_version || '' }}
       app_version: ${{ github.event.inputs.app_version || '' }}
+      # A manual run rehearses unless unticked; a tag push always publishes.
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      # Installed by the installer, never listed in a Marketplace index.
+      index_channel: none
