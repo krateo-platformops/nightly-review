@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Moves the commit-pinned reusable workflows and actions forward by pull request.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
