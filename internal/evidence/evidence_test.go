@@ -103,19 +103,38 @@ func TestAnUnknownShapeIsUnmatchedNotSilent(t *testing.T) {
 // --- the read -------------------------------------------------------------------------------------
 
 // newConn answers the census and the questions query by what they select, like the Python _Conn.
+// census, when given, is one agent-less total (events, user_authored, sessions, active) and is answered
+// as a single census row; nil derives one census row per agent from rows, with 3 agent replies on the
+// first agent.
 func newConn(rows [][]any, census []any) *fake.Conn {
-	if census == nil {
-		sessions := map[any]bool{}
+	var censusRows [][]any
+	if census != nil {
+		censusRows = [][]any{append([]any{"(any)"}, census...)}
+	} else {
+		var agents []string
+		per := map[string]map[any]bool{}
+		users := map[string]int64{}
 		for _, r := range rows {
-			sessions[r[0]] = true
+			a := r[1].(string)
+			if per[a] == nil {
+				per[a] = map[any]bool{}
+				agents = append(agents, a)
+			}
+			per[a][r[0]] = true
+			users[a]++
 		}
-		users := int64(len(rows))
-		census = []any{users + 3, users, int64(len(sessions)), int64(len(sessions))}
+		for i, a := range agents {
+			extra := int64(0)
+			if i == 0 {
+				extra = 3
+			}
+			censusRows = append(censusRows, []any{a, users[a] + extra, users[a], int64(len(per[a])), int64(len(per[a]))})
+		}
 	}
 	return &fake.Conn{Answer: func(q string, _ map[string]any) ([][]any, error) {
 		switch {
 		case strings.Contains(q, "AS user_authored"):
-			return [][]any{census}, nil
+			return censusRows, nil
 		case strings.Contains(q, "WITH q AS"):
 			return rows, nil
 		}
@@ -249,6 +268,14 @@ func TestQuestionsSQLIsWindowedOnTheEventAndNeverSelectsAUser(t *testing.T) {
 	}
 }
 
+// The census is per agent, so the bench predicate can leave agents out of the denominator.
+func TestTheCensusIsOneRowPerAgent(t *testing.T) {
+	q := E.QuestionsCensusSQL
+	if !strings.Contains(q, "coalesce(s.agent_id, '(none)')                        AS agent") || !strings.Contains(q, "GROUP BY 1") {
+		t.Fatal(q)
+	}
+}
+
 func TestThePrefilterMatchesBothRuntimesSpelling(t *testing.T) {
 	if !strings.Contains(E.QuestionsSQL, `"author":"user"`) || !strings.Contains(E.QuestionsSQL, `"Author":"user"`) {
 		t.Fatal()
@@ -310,7 +337,7 @@ func TestTheWholeSourceIsRedactedAgainOnTheWayOut(t *testing.T) {
 	useDB(t, &fake.Conn{Answer: func(q string, _ map[string]any) ([][]any, error) {
 		switch {
 		case strings.Contains(q, "AS user_authored"):
-			return [][]any{{int64(2), int64(1), int64(1), int64(1)}}, nil
+			return [][]any{{"krateo_system__NS__a", int64(2), int64(1), int64(1), int64(1)}}, nil
 		case strings.Contains(q, "WITH q AS"):
 			return [][]any{{"s", "krateo_system__NS__a", goEvent("token "+jwt, "user"), int64(1)}}, nil
 		}
@@ -392,7 +419,7 @@ func censusDB(t *testing.T, rows [][]any) {
 	useDB(t, &fake.Conn{Answer: func(q string, _ map[string]any) ([][]any, error) {
 		switch {
 		case strings.Contains(q, "AS user_authored"):
-			return [][]any{{int64(0), int64(0), int64(0), int64(0)}}, nil
+			return [][]any{}, nil
 		case strings.Contains(q, "WITH q AS"):
 			return nil, nil
 		}
@@ -538,6 +565,51 @@ func TestABenchAgentsQuestionsNeverReachTheReview(t *testing.T) {
 	out := strings.Join(lines, "\n")
 	if strings.Contains(out, "scripted bench question") || !strings.Contains(out, "how do I scale a deployment") {
 		t.Fatal(out)
+	}
+}
+
+// A day of bench traffic and no human question is a quiet night, not an unreadable corpus. The census
+// once counted the bench agent's events while the rows dropped them, so this tripped "no question
+// recognised ... the stored event shape may have changed" (krateo-057, 2026-11-26 02:00Z).
+func TestBenchTrafficAloneIsNotAnUnreadableCorpus(t *testing.T) {
+	t.Setenv("AGENT_ANALYSIS_EXCLUDE_AGENTS", "*-bench")
+	conn := &fake.Conn{Answer: func(q string, _ map[string]any) ([][]any, error) {
+		switch {
+		case strings.Contains(q, "AS user_authored"):
+			return [][]any{{"krateo_system__NS__agentiko_probe_new_bench", int64(1945), int64(175), int64(80), int64(80)}}, nil
+		case strings.Contains(q, "WITH q AS"):
+			return [][]any{row("s1", "krateo_system__NS__agentiko_probe_new_bench", goEvent("scripted probe question", "user"), 1)}, nil
+		}
+		return nil, errors.New("unexpected query")
+	}}
+	stats := map[string]any{}
+	lines, err := read(t, conn, stats)
+	if err != nil || len(lines) != 0 || stats["questions"] != int64(0) {
+		t.Fatal(err, lines, stats)
+	}
+	shapes := stats["shapes"].(*py.OMap)
+	if n, _ := shapes.Get("notUserAuthored"); n != int64(0) {
+		t.Fatal("bench events counted in the denominator:", shapes)
+	}
+}
+
+// The guard still fires for the agents it covers: a non-bench agent with events and no recognisable
+// question is the failure it exists for, even when bench traffic sits beside it.
+func TestTheGuardStillFiresForANonBenchAgentBesideBenchTraffic(t *testing.T) {
+	t.Setenv("AGENT_ANALYSIS_EXCLUDE_AGENTS", "*-bench")
+	conn := &fake.Conn{Answer: func(q string, _ map[string]any) ([][]any, error) {
+		switch {
+		case strings.Contains(q, "AS user_authored"):
+			return [][]any{{"krateo_system__NS__agentiko_probe_old_bench", int64(900), int64(90), int64(40), int64(40)},
+				{"krateo_system__NS__agentiko", int64(12), int64(2), int64(1), int64(1)}}, nil
+		case strings.Contains(q, "WITH q AS"):
+			return [][]any{row("s9", "krateo_system__NS__agentiko", "{\"unknown\":\"shape\"}", 2)}, nil
+		}
+		return nil, errors.New("unexpected query")
+	}}
+	_, err := read(t, conn, map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "12 event(s) in the window from the agents this read covers, and no question recognised") {
+		t.Fatal(err)
 	}
 }
 

@@ -377,12 +377,19 @@ const QuestionsSQL = `
 
 // QuestionsCensusSQL is the denominator. Without it "no questions" cannot be told apart from "questions
 // in a shape we no longer recognise": both return zero rows from QuestionsSQL.
+//
+// ONE ROW PER AGENT, so the benchmark agents the row loop skips can be left out of the denominator by
+// the SAME predicate (isBench). A single total counted them while the loop dropped every one of their
+// rows: a day of bench traffic and no human question then read as an unreadable corpus and the
+// source was marked degraded. A session belongs to one agent, so per-agent session counts add up.
 const QuestionsCensusSQL = `
-    SELECT count(*)                                              AS events,
+    SELECT coalesce(s.agent_id, '(none)')                        AS agent,
+           count(*)                                              AS events,
            count(*) FILTER (WHERE ` + userAuthored + `)              AS user_authored,
            count(DISTINCT e.session_id) FILTER (WHERE ` + userAuthored + `) AS sessions,
            count(DISTINCT e.session_id)                          AS active
     ` + eligible + `
+     GROUP BY 1
 `
 
 // AgentKey is kagent's agent_id: ConvertToPythonIdentifier(namespace + "/" + name).
@@ -475,14 +482,21 @@ func ReadQuestions(ctx context.Context, conn pg.Conn, window prompt.Window, stat
 		}
 	}
 	excluded := strings.Join(excludedKeys, ",")
+	bench := benchPatterns()
 	census, err := conn.Run(ctx, QuestionsCensusSQL, map[string]any{"frm": window.From, "to": window.To, "excluded": excluded})
 	if err != nil {
 		return nil, err
 	}
-	if len(census) != 1 || len(census[0]) != 4 {
-		return nil, py.Errorf("ValueError", "too many values to unpack (expected 1)")
+	var events, userAuthoredN, sessions, active int64
+	for _, c := range census {
+		if len(c) != 5 {
+			return nil, py.Errorf("ValueError", "census row has %d columns, expected 5 (agent, events, user_authored, sessions, active)", len(c))
+		}
+		if isBench(py.String(c[0]), bench) {
+			continue
+		}
+		events, userAuthoredN, sessions, active = events+toInt(c[1]), userAuthoredN+toInt(c[2]), sessions+toInt(c[3]), active+toInt(c[4])
 	}
-	events, userAuthoredN, sessions, active := toInt(census[0][0]), toInt(census[0][1]), toInt(census[0][2]), toInt(census[0][3])
 	rows, err := conn.Run(ctx, QuestionsSQL, map[string]any{"per": QuestionsPerSession, "sessions": QuestionsMaxSessions,
 		"frm": window.From, "to": window.To, "excluded": excluded})
 	if err != nil {
@@ -508,26 +522,11 @@ func ReadQuestions(ctx context.Context, conn pg.Conn, window prompt.Window, stat
 	// question reached the main review through this block. Bench traffic is scripted, not a person, and
 	// nothing derived from it may become product content. The patterns are the stage's own, rewritten
 	// into kagent's agent_id form ("*-bench" -> "*_bench") because that is what `agent` holds.
-	var bench []string
-	for _, p := range strings.Split(os.Getenv("AGENT_ANALYSIS_EXCLUDE_AGENTS"), ",") {
-		if py.Strip(p) != "" {
-			bench = append(bench, AgentKey(p))
-		}
-	}
+	// The census above already left these agents out, by the same predicate.
 	for _, row := range rows {
 		sessionID, agent, data, total := row[0], py.String(row[1]), row[2], toInt(row[3])
-		if len(bench) > 0 {
-			skip := false
-			_, _, tail := rpartition(agent, "__NS__")
-			for _, p := range bench {
-				if py.Fnmatchcase(agent, p) || py.Fnmatchcase(tail, p) {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
-			}
+		if isBench(agent, bench) {
+			continue
 		}
 		text, shape := QuestionText(data)
 		cur, _ := shapes.Get(shape)
@@ -593,8 +592,10 @@ func ReadQuestions(ctx context.Context, conn pg.Conn, window prompt.Window, stat
 	// not one question came out: either the stored shape changed or the prefilter no longer matches it.
 	matched, _ := shapes.Get("matched")
 	if events != 0 && matched.(int64) == 0 {
-		return nil, py.Errorf("RuntimeError", "%d event(s) in the window but no question recognised (shapes %s); "+
-			"the stored event shape may have changed", events, py.Repr(shapes))
+		// The counts, and no diagnosis: a stored-shape change is one cause, a census that counts what the
+		// rows drop was another (2026-11-26), and naming either sends the reader to look there first.
+		return nil, py.Errorf("RuntimeError", "%d event(s) in the window from the agents this read covers, "+
+			"and no question recognised (shapes %s)", events, py.Repr(shapes))
 	}
 	// THE PARTIAL VERSION OF THE SAME FAILURE. Two runtimes write two spellings; if one of them changes,
 	// the other still matches and the total above never reaches zero — a night would quietly lose every
@@ -620,6 +621,29 @@ func sessionKey(v any) any {
 		return x
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// benchPatterns are AGENT_ANALYSIS_EXCLUDE_AGENTS in kagent's agent_id form ("*-bench" -> "*_bench").
+func benchPatterns() []string {
+	var bench []string
+	for _, p := range strings.Split(os.Getenv("AGENT_ANALYSIS_EXCLUDE_AGENTS"), ",") {
+		if py.Strip(p) != "" {
+			bench = append(bench, AgentKey(p))
+		}
+	}
+	return bench
+}
+
+// isBench is the one test of "this agent is a benchmark agent": against the whole agent_id and against
+// its name after the namespace. The census and the question rows both use it, so they cannot disagree.
+func isBench(agent string, bench []string) bool {
+	_, _, tail := rpartition(agent, "__NS__")
+	for _, p := range bench {
+		if py.Fnmatchcase(agent, p) || py.Fnmatchcase(tail, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func rpartition(s, sep string) (string, string, string) {

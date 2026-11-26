@@ -345,8 +345,11 @@ func TestPromptsMatchPython(t *testing.T) {
 	check(t, &bad, "ASSESSMENT_SCHEMA", py.DumpsJSON(analysis.AssessmentSchema, py.DumpOpts{Indent: 1, SortKeys: true, EnsureASCII: true}),
 		py.Get(fx, "assessmentSchema"))
 	sql := py.Get(fx, "sql")
+	// questionsCensus is not compared: since 0.2.8 it is one row per agent, so the benchmark agents the
+	// question rows skip (the Go port's own addition) are left out of the denominator by the same
+	// predicate. Python's single total cannot express that; internal/evidence's tests pin the new shape.
 	for name, got := range map[string]string{"session": evidence.SessionSQL, "questions": evidence.QuestionsSQL,
-		"questionsCensus": evidence.QuestionsCensusSQL, "census": analysis.CensusSQL, "conversations": analysis.ConversationsSQL,
+		"census": analysis.CensusSQL, "conversations": analysis.ConversationsSQL,
 		"warningEvents": failures.WarningEventsSQL} {
 		check(t, &bad, "sql "+name, got, py.Get(sql, name))
 	}
