@@ -164,7 +164,7 @@ func drive(t *testing.T, askFails bool, extra ...map[string]any) *driven {
 		case strings.Contains(sql, "WITH q AS"):
 			return [][]any{{"s1", busyID, q, int64(9)}, {"s1", busyID, "not json", int64(9)}}, nil
 		case strings.Contains(sql, "AS user_authored"):
-			return [][]any{{int64(20), int64(9), int64(2), int64(2)}}, nil
+			return [][]any{{busyID, int64(20), int64(9), int64(2), int64(2)}}, nil
 		}
 		return [][]any{{busyID, int64(40), int64(4), int64(3), now}, {"krateo_system__NS__gone", int64(2), int64(0), int64(1), now.Add(-30 * 24 * time.Hour)}}, nil
 	}}
