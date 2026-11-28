@@ -29,6 +29,23 @@ jobs:
       - name: Vet
         run: go vet ./... && go vet -tags drift ./drift/
       - name: Test
-        run: go test ./...
+        run: |
+          set -euo pipefail
+          go test -count=1 -v ./... 2>&1 | tee /tmp/go-test.log
+      # `go test ./...` passes vacuously if packages stop being collected. Count `--- PASS` (not
+      # `=== RUN`, so skipped tests do not count), subtests included.
+      #   observed healthy run   381   (go test -count=1 -v ./..., 2026-11-28; 1 skip, 0 fail)
+      #   floor                  320   about 15% under, so losing a file contributing more than ~60
+      #                                passes fails, while ordinary churn does not
+      # Raise it when the suite grows; a floor that never moves stops meaning anything.
+      - name: assert the suite actually ran tests
+        run: |
+          set -euo pipefail
+          count=$(grep -c -- '--- PASS' /tmp/go-test.log || true)
+          echo "tests passed: $count (observed healthy run: 381)"
+          if [ "$count" -lt 320 ]; then
+            echo "::error::only $count tests passed, floor is 320 - a suite that collects little or nothing passes vacuously"
+            exit 1
+          fi
       - name: public text
         run: hack/check-public-text.sh
